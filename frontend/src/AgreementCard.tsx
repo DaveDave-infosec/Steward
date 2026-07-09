@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { acceptAgreement, reserveCapital, getAgreementRaw } from "./lib/contracts";
+import { acceptAgreement, reserveCapital, getAgreementRaw, balanceOf } from "./lib/contracts";
 import { executeReview } from "./lib/review";
 
 function CapitalBar({ reserved, released, withheld, revoked }: { reserved: number; released: number; withheld: number; revoked: number }) {
@@ -52,6 +52,38 @@ export function AgreementCard({ agreement, address, onChanged, autoBusy, autoKey
       await onChanged();
     } catch (e: any) { setErr(e?.message ?? String(e)); setMsg(null); }
     finally { setBusy(false); }
+  }
+
+  async function reserveFlow() {
+    setBusy(true); setErr(null); setMsg("Checking balance…");
+    try {
+      const bal = await balanceOf(address);
+      if (bal < trancheSum) {
+        setErr("Insufficient genUSDC — you need " + trancheSum + ", you have " + bal + ". Click \"Mint 10000\" above, then try again.");
+        setMsg(null);
+        setBusy(false);
+        return;
+      }
+      setMsg("Reserving…");
+      await reserveCapital(address, a.agreement_id, trancheSum);
+      let ag = await getAgreementRaw(a.agreement_id);
+      let t = 0;
+      while (ag && ag.status === "accepted" && t < 12) {
+        await new Promise((r) => setTimeout(r, 2500));
+        ag = await getAgreementRaw(a.agreement_id);
+        t++;
+      }
+      if (ag && ag.status === "accepted") {
+        setErr("Reserve didn't take effect — check your genUSDC balance and try again.");
+      }
+      setMsg(null);
+      await onChanged();
+    } catch (e: any) {
+      setErr(e?.message ?? String(e));
+      setMsg(null);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function runReviewFlow(c: any) {
@@ -133,7 +165,7 @@ export function AgreementCard({ agreement, address, onChanged, autoBusy, autoKey
           </button>
         )}
         {a.status === "accepted" && isCreator && (
-          <button className={"primary" + (busy ? " pending" : "")} disabled={busy} onClick={() => run("Reserving…", "accepted", () => reserveCapital(address, a.agreement_id, trancheSum))}>
+          <button className={"primary" + (busy ? " pending" : "")} disabled={busy} onClick={reserveFlow}>
             {busy ? "Reserving…" : "Reserve " + trancheSum + " genUSDC"}
           </button>
         )}
