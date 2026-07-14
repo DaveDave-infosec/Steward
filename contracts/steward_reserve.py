@@ -4,15 +4,13 @@ import json
 
 
 class StewardReserve(gl.Contract):
-    # --- config ---
     owner: str
     fee_wallet: str
     protocol_fee_bps: u256
+    verifier_address: str
 
-    # --- embedded settlement token (GenUSDC), whole units ---
     balances: TreeMap[str, u256]
 
-    # --- agreements ---
     agreement_ids: DynArray[str]
     agreement_counter: u256
     a_creator: TreeMap[str, str]
@@ -25,7 +23,6 @@ class StewardReserve(gl.Contract):
     a_checkpoint_count: TreeMap[str, u256]
     a_current_index: TreeMap[str, u256]
 
-    # --- checkpoints, keyed by agreement_id + "#" + index ---
     c_evidence_url: TreeMap[str, str]
     c_criteria: TreeMap[str, str]
     c_tranche_amount: TreeMap[str, u256]
@@ -36,13 +33,17 @@ class StewardReserve(gl.Contract):
     c_withheld: TreeMap[str, u256]
     c_case_id: TreeMap[str, str]
 
-    def __init__(self, owner_address: str, fee_wallet_address: str, protocol_fee_bps: int):
+    def __init__(self, owner_address: str, fee_wallet_address: str, protocol_fee_bps: int, verifier_address: str):
         self.owner = owner_address.lower()
         self.fee_wallet = fee_wallet_address.lower()
         self.protocol_fee_bps = u256(protocol_fee_bps)
+        self.verifier_address = verifier_address.lower()
         self.agreement_counter = u256(0)
 
-    # ---------- token: open testnet faucet ----------
+    def _sender(self) -> str:
+        return gl.message.sender_address.as_hex.lower()
+
+    # ---------- token faucet ----------
     @gl.public.write
     def mint(self, to_address: str, amount: int):
         to_address = to_address.lower()
@@ -60,15 +61,17 @@ class StewardReserve(gl.Contract):
             "owner": self.owner,
             "fee_wallet": self.fee_wallet,
             "protocol_fee_bps": int(self.protocol_fee_bps),
+            "verifier": self.verifier_address,
         }
 
-    # ---------- agreement lifecycle ----------
+    # ---------- agreement lifecycle (sender-authenticated) ----------
     @gl.public.write
-    def create_agreement(self, caller: str, recipient: str, max_allocation: int) -> str:
+    def create_agreement(self, recipient: str, max_allocation: int) -> str:
+        creator = self._sender()
         agreement_id = "agr_" + str(int(self.agreement_counter))
         self.agreement_counter = u256(int(self.agreement_counter) + 1)
         self.agreement_ids.append(agreement_id)
-        self.a_creator[agreement_id] = caller.lower()
+        self.a_creator[agreement_id] = creator
         self.a_recipient[agreement_id] = recipient.lower()
         self.a_max_allocation[agreement_id] = u256(int(max_allocation))
         self.a_reserved[agreement_id] = u256(0)
@@ -80,12 +83,12 @@ class StewardReserve(gl.Contract):
         return agreement_id
 
     @gl.public.write
-    def add_checkpoint(self, caller: str, agreement_id: str, evidence_url: str, criteria: str, tranche_amount: int, review_cadence: str):
+    def add_checkpoint(self, agreement_id: str, evidence_url: str, criteria: str, tranche_amount: int, review_cadence: str):
         if agreement_id not in self.a_status:
             raise gl.UserError("unknown agreement")
         if self.a_status[agreement_id] != "draft":
             raise gl.UserError("agreement locked; checkpoints immutable")
-        if caller.lower() != self.a_creator[agreement_id]:
+        if self._sender() != self.a_creator[agreement_id]:
             raise gl.UserError("only creator can add checkpoints")
         idx = int(self.a_checkpoint_count[agreement_id])
         ck = agreement_id + "#" + str(idx)
@@ -101,10 +104,10 @@ class StewardReserve(gl.Contract):
         self.a_checkpoint_count[agreement_id] = u256(idx + 1)
 
     @gl.public.write
-    def finalize_agreement(self, caller: str, agreement_id: str):
+    def finalize_agreement(self, agreement_id: str):
         if agreement_id not in self.a_status:
             raise gl.UserError("unknown agreement")
-        if caller.lower() != self.a_creator[agreement_id]:
+        if self._sender() != self.a_creator[agreement_id]:
             raise gl.UserError("only creator can finalize")
         if self.a_status[agreement_id] != "draft":
             raise gl.UserError("already finalized")
@@ -113,29 +116,29 @@ class StewardReserve(gl.Contract):
         self.a_status[agreement_id] = "locked"
 
     @gl.public.write
-    def accept_agreement(self, caller: str, agreement_id: str):
+    def accept_agreement(self, agreement_id: str):
         if agreement_id not in self.a_status:
             raise gl.UserError("unknown agreement")
         if self.a_status[agreement_id] != "locked":
             raise gl.UserError("agreement not locked for acceptance")
-        if caller.lower() != self.a_recipient[agreement_id]:
-            raise gl.UserError("only recipient can accept")
+        if self._sender() != self.a_recipient[agreement_id]:
+            raise gl.UserError("only the named recipient can accept")
         self.a_status[agreement_id] = "accepted"
 
     @gl.public.write
-    def reserve_capital(self, caller: str, agreement_id: str, amount: int):
+    def reserve_capital(self, agreement_id: str, amount: int):
         if agreement_id not in self.a_status:
             raise gl.UserError("unknown agreement")
         if self.a_status[agreement_id] != "accepted":
             raise gl.UserError("agreement must be accepted before reserving")
-        if caller.lower() != self.a_creator[agreement_id]:
+        creator = self.a_creator[agreement_id]
+        if self._sender() != creator:
             raise gl.UserError("only creator can reserve capital")
         amt = int(amount)
         if amt <= 0:
             raise gl.UserError("amount must be positive")
         if amt > int(self.a_max_allocation[agreement_id]):
             raise gl.UserError("exceeds max allocation")
-        creator = caller.lower()
         bal = int(self.balances[creator]) if creator in self.balances else 0
         if bal < amt:
             raise gl.UserError("insufficient GenUSDC balance")
@@ -143,17 +146,28 @@ class StewardReserve(gl.Contract):
         self.a_reserved[agreement_id] = u256(int(self.a_reserved[agreement_id]) + amt)
         self.a_status[agreement_id] = "active"
 
+    # ---------- trustless settlement, bound to the verifier's on-chain verdict ----------
     @gl.public.write
-    def apply_verdict(self, caller: str, agreement_id: str, checkpoint_index: int, fulfillment_pct: int, outcome: str, case_id: str):
+    def apply_verdict(self, case_id: str):
+        verifier = gl.get_contract_at(Address(self.verifier_address))
+        verdict = verifier.view().get_verdict(case_id)
+        if not verdict or "outcome" not in verdict or str(verdict["outcome"]) == "":
+            raise gl.UserError("verdict not found on verifier")
+
+        agreement_id = str(verdict["agreement_id"])
+        idx = int(verdict["checkpoint_index"])
+
         if agreement_id not in self.a_status:
             raise gl.UserError("unknown agreement")
-        if caller.lower() != self.owner and caller.lower() != self.a_creator[agreement_id]:
-            raise gl.UserError("only owner or agreement creator can relay verdicts (V1 relay)")
+
+        sender = self._sender()
+        if sender != self.owner and sender != self.a_creator[agreement_id]:
+            raise gl.UserError("only owner or agreement creator can relay verdicts")
         if self.a_status[agreement_id] != "active":
             raise gl.UserError("agreement not active")
-        idx = int(checkpoint_index)
         if idx != int(self.a_current_index[agreement_id]):
             raise gl.UserError("not the current checkpoint")
+
         ck = agreement_id + "#" + str(idx)
         if ck not in self.c_status:
             raise gl.UserError("unknown checkpoint")
@@ -161,11 +175,18 @@ class StewardReserve(gl.Contract):
         if st != "pending" and st != "paused" and st != "escalated":
             raise gl.UserError("checkpoint already resolved")
 
-        pct = int(fulfillment_pct)
+        # the verdict must have been produced against THIS checkpoint's locked inputs
+        if str(verdict["evidence_url"]) != self.c_evidence_url[ck]:
+            raise gl.UserError("verdict evidence source does not match the locked checkpoint")
+        if str(verdict["criteria"]) != self.c_criteria[ck][:400]:
+            raise gl.UserError("verdict criteria do not match the locked checkpoint")
+
+        pct = int(verdict["fulfillment_pct"])
         if pct < 0:
             pct = 0
         if pct > 100:
             pct = 100
+        outcome = str(verdict["outcome"])
 
         creator = self.a_creator[agreement_id]
         recipient = self.a_recipient[agreement_id]
@@ -264,27 +285,6 @@ class StewardReserve(gl.Contract):
         }
 
     @gl.public.view
-    def get_agreement_count(self) -> int:
-        return int(self.agreement_counter)
-
-    @gl.public.view
-    def get_all_agreement_ids(self) -> list:
-        out = []
-        for i in range(len(self.agreement_ids) - 1, -1, -1):
-            out.append(self.agreement_ids[i])
-        return out
-
-    @gl.public.view
-    def get_agreements_for(self, address: str) -> list:
-        addr = address.lower()
-        out = []
-        for i in range(len(self.agreement_ids) - 1, -1, -1):
-            aid = self.agreement_ids[i]
-            if self.a_creator[aid] == addr or self.a_recipient[aid] == addr:
-                out.append(aid)
-        return out
-
-    @gl.public.view
     def get_agreement_full(self, agreement_id: str) -> dict:
         if agreement_id not in self.a_status:
             return {}
@@ -316,3 +316,24 @@ class StewardReserve(gl.Contract):
             "current_index": int(self.a_current_index[agreement_id]),
             "checkpoints_json": json.dumps(cps),
         }
+
+    @gl.public.view
+    def get_agreements_for(self, address: str) -> list:
+        addr = address.lower()
+        out = []
+        for i in range(len(self.agreement_ids) - 1, -1, -1):
+            aid = self.agreement_ids[i]
+            if self.a_creator[aid] == addr or self.a_recipient[aid] == addr:
+                out.append(aid)
+        return out
+
+    @gl.public.view
+    def get_agreement_count(self) -> int:
+        return int(self.agreement_counter)
+
+    @gl.public.view
+    def get_all_agreement_ids(self) -> list:
+        out = []
+        for i in range(len(self.agreement_ids) - 1, -1, -1):
+            out.append(self.agreement_ids[i])
+        return out

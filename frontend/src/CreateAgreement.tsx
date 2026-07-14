@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { createAgreement, addCheckpoint, finalizeAgreement, getAgreementCount } from "./lib/contracts";
-import { addMine } from "./lib/mine";
 
 type CheckpointDraft = {
   evidenceUrl: string;
@@ -83,7 +82,6 @@ export function CreateAgreement({ account, onCreated }: { account: string; onCre
       }
       setStatus("Finalizing — locking criteria & sources immutably…");
       await finalizeAgreement(account, agreementId);
-      addMine(account, agreementId);
       setRecipient(""); setMaxAllocation(""); setCheckpoints([emptyCheckpoint()]);
       setStatus(null);
       setOpen(false);

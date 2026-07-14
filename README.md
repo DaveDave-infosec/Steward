@@ -30,7 +30,7 @@ A CI pipeline can mechanically check that a tag exists or that tests pass. It ca
 |---|---|
 | Network | GenLayer Studio Network |
 | Chain ID | 61999 (0xF22F) |
-| Reserve contract | `0x610F1D7dD5920499E06f8E1a82fe459E2B793dd3` |
+| Reserve contract | `0x27ee3C9E2b070122fe1CE7A64C7B9b2711215BD7` |
 | Verifier contract | `0x1e4Eba962BFF2b118Bc19d8d5304de92f927b622` |
 
 genUSDC is a mock settlement token for the testnet.
@@ -44,7 +44,7 @@ Click **Demo mode** for a free, per-browser test wallet (studionet is gasless â€
 
 ## V1 limitations, stated honestly
 
-- **Execution relay.** The verdict is relayed into the reserve by an owner-or-creator call rather than an automatic contract-to-contract trigger; the verdict values come only from validator consensus and cannot be changed by the relayer. A trustless verifier-to-reserve bridge is the V2 target.
+- **Settlement is bound to the verdict.** `apply_verdict` takes only a case id: the reserve reads the verdict directly from the verifier contract on-chain (`gl.get_contract_at(...).view()`), verifies it was produced against the checkpoint's locked evidence source and criteria, authenticates the transaction sender (`gl.message.sender_address`), and settles strictly by the verifier's stored fulfilment percentage and outcome. The relayer cannot fake the number, spoof identity, or use a verdict from a different repository. A relaying transaction still triggers the read today; a fully event-driven trigger is a later refinement.
 - **Scope.** Software-development grants only; every checkpoint condition must be web-verifiable from developer artifacts.
 - **Evidence window.** The verifier reads a bounded slice of each fetched source.
 - **Scheduler.** The autonomy scheduler is a client-side loop that runs while the app tab is open; a server-side or on-chain trigger is the V2 path.

@@ -24,10 +24,9 @@ export async function executeReview(
     tries++;
   }
   if (!v || !v.outcome) throw new Error("Verdict not readable yet for " + caseId);
-  const pct = Number(v.fulfillment_pct);
 
-  onPhase?.("Standing order executes: " + v.outcome + " at " + pct + "%…");
-  await applyVerdict(account, agreementId, checkpointIndex, pct, v.outcome, caseId);
+  onPhase?.("Reserve reads the verifier verdict on-chain & settles by consensus…");
+  await applyVerdict(account, caseId);
 
   let cp = await getCheckpointRaw(agreementId, checkpointIndex);
   let t2 = 0;
