@@ -85,11 +85,11 @@ class StewardReserve(gl.Contract):
     @gl.public.write
     def add_checkpoint(self, agreement_id: str, evidence_url: str, criteria: str, tranche_amount: int, review_cadence: str):
         if agreement_id not in self.a_status:
-            raise gl.UserError("unknown agreement")
+            raise Exception("unknown agreement")
         if self.a_status[agreement_id] != "draft":
-            raise gl.UserError("agreement locked; checkpoints immutable")
+            raise Exception("agreement locked; checkpoints immutable")
         if self._sender() != self.a_creator[agreement_id]:
-            raise gl.UserError("only creator can add checkpoints")
+            raise Exception("only creator can add checkpoints")
         idx = int(self.a_checkpoint_count[agreement_id])
         ck = agreement_id + "#" + str(idx)
         self.c_evidence_url[ck] = evidence_url
@@ -106,42 +106,42 @@ class StewardReserve(gl.Contract):
     @gl.public.write
     def finalize_agreement(self, agreement_id: str):
         if agreement_id not in self.a_status:
-            raise gl.UserError("unknown agreement")
+            raise Exception("unknown agreement")
         if self._sender() != self.a_creator[agreement_id]:
-            raise gl.UserError("only creator can finalize")
+            raise Exception("only creator can finalize")
         if self.a_status[agreement_id] != "draft":
-            raise gl.UserError("already finalized")
+            raise Exception("already finalized")
         if int(self.a_checkpoint_count[agreement_id]) == 0:
-            raise gl.UserError("no checkpoints defined")
+            raise Exception("no checkpoints defined")
         self.a_status[agreement_id] = "locked"
 
     @gl.public.write
     def accept_agreement(self, agreement_id: str):
         if agreement_id not in self.a_status:
-            raise gl.UserError("unknown agreement")
+            raise Exception("unknown agreement")
         if self.a_status[agreement_id] != "locked":
-            raise gl.UserError("agreement not locked for acceptance")
+            raise Exception("agreement not locked for acceptance")
         if self._sender() != self.a_recipient[agreement_id]:
-            raise gl.UserError("only the named recipient can accept")
+            raise Exception("only the named recipient can accept")
         self.a_status[agreement_id] = "accepted"
 
     @gl.public.write
     def reserve_capital(self, agreement_id: str, amount: int):
         if agreement_id not in self.a_status:
-            raise gl.UserError("unknown agreement")
+            raise Exception("unknown agreement")
         if self.a_status[agreement_id] != "accepted":
-            raise gl.UserError("agreement must be accepted before reserving")
+            raise Exception("agreement must be accepted before reserving")
         creator = self.a_creator[agreement_id]
         if self._sender() != creator:
-            raise gl.UserError("only creator can reserve capital")
+            raise Exception("only creator can reserve capital")
         amt = int(amount)
         if amt <= 0:
-            raise gl.UserError("amount must be positive")
+            raise Exception("amount must be positive")
         if amt > int(self.a_max_allocation[agreement_id]):
-            raise gl.UserError("exceeds max allocation")
+            raise Exception("exceeds max allocation")
         bal = int(self.balances[creator]) if creator in self.balances else 0
         if bal < amt:
-            raise gl.UserError("insufficient GenUSDC balance")
+            raise Exception("insufficient GenUSDC balance")
         self.balances[creator] = u256(bal - amt)
         self.a_reserved[agreement_id] = u256(int(self.a_reserved[agreement_id]) + amt)
         self.a_status[agreement_id] = "active"
@@ -152,34 +152,34 @@ class StewardReserve(gl.Contract):
         verifier = gl.get_contract_at(Address(self.verifier_address))
         verdict = verifier.view().get_verdict(case_id)
         if not verdict or "outcome" not in verdict or str(verdict["outcome"]) == "":
-            raise gl.UserError("verdict not found on verifier")
+            raise Exception("verdict not found on verifier")
 
         agreement_id = str(verdict["agreement_id"])
         idx = int(verdict["checkpoint_index"])
 
         if agreement_id not in self.a_status:
-            raise gl.UserError("unknown agreement")
+            raise Exception("unknown agreement")
 
         sender = self._sender()
         if sender != self.owner and sender != self.a_creator[agreement_id]:
-            raise gl.UserError("only owner or agreement creator can relay verdicts")
+            raise Exception("only owner or agreement creator can relay verdicts")
         if self.a_status[agreement_id] != "active":
-            raise gl.UserError("agreement not active")
+            raise Exception("agreement not active")
         if idx != int(self.a_current_index[agreement_id]):
-            raise gl.UserError("not the current checkpoint")
+            raise Exception("not the current checkpoint")
 
         ck = agreement_id + "#" + str(idx)
         if ck not in self.c_status:
-            raise gl.UserError("unknown checkpoint")
+            raise Exception("unknown checkpoint")
         st = self.c_status[ck]
         if st != "pending" and st != "paused" and st != "escalated":
-            raise gl.UserError("checkpoint already resolved")
+            raise Exception("checkpoint already resolved")
 
         # the verdict must have been produced against THIS checkpoint's locked inputs
         if str(verdict["evidence_url"]) != self.c_evidence_url[ck]:
-            raise gl.UserError("verdict evidence source does not match the locked checkpoint")
+            raise Exception("verdict evidence source does not match the locked checkpoint")
         if str(verdict["criteria"]) != self.c_criteria[ck][:400]:
-            raise gl.UserError("verdict criteria do not match the locked checkpoint")
+            raise Exception("verdict criteria do not match the locked checkpoint")
 
         pct = int(verdict["fulfillment_pct"])
         if pct < 0:
@@ -216,10 +216,10 @@ class StewardReserve(gl.Contract):
         elif outcome == "Reduce":
             frac = pct
         else:
-            raise gl.UserError("unknown outcome")
+            raise Exception("unknown outcome")
 
         if tranche > reserved:
-            raise gl.UserError("tranche exceeds reserved capital")
+            raise Exception("tranche exceeds reserved capital")
 
         gross = tranche * frac // 100
         fee = gross * fee_bps // 10000
