@@ -129,7 +129,7 @@ class StewardVerifier(gl.Contract):
         self.v_agreement_id[case_id] = agreement_id
         self.v_checkpoint_index[case_id] = u256(int(checkpoint_index))
         self.v_evidence_url[case_id] = evidence_url
-        self.v_criteria[case_id] = local_criteria[:400]
+        self.v_criteria[case_id] = local_criteria
         self.v_fulfillment_pct[case_id] = u256(pct)
         self.v_outcome[case_id] = outcome
         self.v_reasoning[case_id] = reasoning[:400]

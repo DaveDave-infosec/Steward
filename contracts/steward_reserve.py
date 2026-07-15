@@ -178,7 +178,7 @@ class StewardReserve(gl.Contract):
         # the verdict must have been produced against THIS checkpoint's locked inputs
         if str(verdict["evidence_url"]) != self.c_evidence_url[ck]:
             raise Exception("verdict evidence source does not match the locked checkpoint")
-        if str(verdict["criteria"]) != self.c_criteria[ck][:400]:
+        if str(verdict["criteria"]) != self.c_criteria[ck]:
             raise Exception("verdict criteria do not match the locked checkpoint")
 
         pct = int(verdict["fulfillment_pct"])
