@@ -159,6 +159,15 @@ class StewardVerifier(gl.Contract):
         }
 
     @gl.public.view
+    def get_latest_case_for(self, agreement_id: str, checkpoint_index: int) -> str:
+        idx = int(checkpoint_index)
+        for i in range(len(self.verdict_ids) - 1, -1, -1):
+            cid = self.verdict_ids[i]
+            if self.v_agreement_id[cid] == agreement_id and int(self.v_checkpoint_index[cid]) == idx:
+                return cid
+        return ""
+
+    @gl.public.view
     def get_verdict_count(self) -> int:
         return int(self.verdict_counter)
 

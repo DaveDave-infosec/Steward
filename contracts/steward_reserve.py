@@ -181,6 +181,11 @@ class StewardReserve(gl.Contract):
         if str(verdict["criteria"]) != self.c_criteria[ck]:
             raise Exception("verdict criteria do not match the locked checkpoint")
 
+        # only the most recent verdict for this checkpoint may settle it
+        latest_case = str(verifier.view().get_latest_case_for(agreement_id, idx))
+        if latest_case != case_id:
+            raise Exception("stale verdict; only the most recent verdict for this checkpoint can settle it")
+
         pct = int(verdict["fulfillment_pct"])
         if pct < 0:
             pct = 0
