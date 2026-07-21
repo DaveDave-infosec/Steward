@@ -7,6 +7,7 @@ import { AgreementCard } from "./AgreementCard";
 import { Copyable } from "./Copyable";
 import { HowItWorks } from "./HowItWorks";
 import { Guide } from "./Guide";
+import { Landing } from "./Landing";
 
 function n(x: any): number {
   return Number(x);
@@ -34,7 +35,7 @@ export default function App() {
   const [minting, setMinting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
-  const [view, setView] = useState<"ledger" | "how" | "guide">("ledger");
+  const [view, setView] = useState<"home" | "ledger" | "how" | "guide">("home");
   const [schedulerOn, setSchedulerOn] = useState(false);
   const [schedulerLog, setSchedulerLog] = useState<string[]>([]);
   const [autoKey, setAutoKey] = useState<string | null>(null);
@@ -149,18 +150,19 @@ export default function App() {
   }
 
   return (
-    <div className="steward">
+    <div className={"steward" + (view === "home" ? " wide" : "")}>
       <header className="masthead">
         <div className="wordmark">STEWARD</div>
         <div className="tagline">Treasury doesn't end at approval. Steward begins there.</div>
         <nav className="masthead-nav">
+          <button className={"navlink" + (view === "home" ? " active" : "")} onClick={() => setView("home")}>Home</button>
           <button className={"navlink" + (view === "ledger" ? " active" : "")} onClick={() => setView("ledger")}>Ledger</button>
           <button className={"navlink" + (view === "guide" ? " active" : "")} onClick={() => setView("guide")}>Guide</button>
           <button className={"navlink" + (view === "how" ? " active" : "")} onClick={() => setView("how")}>How it works</button>
         </nav>
       </header>
 
-      <section className="bar">
+      {view !== "home" && <section className="bar">
         {address ? (
           <div className="wallet">
             <span className={"mode-badge mode-" + mode}>{mode}</span>
@@ -177,11 +179,13 @@ export default function App() {
             <button onClick={useDemo}>Demo mode</button>
           </div>
         )}
-      </section>
+      </section>}
 
       {error && <div className="error mono">{error}</div>}
 
-      {view === "how" ? (
+      {view === "home" ? (
+        <Landing onLaunch={() => setView("ledger")} onHow={() => setView("how")} />
+      ) : view === "how" ? (
         <HowItWorks />
       ) : view === "guide" ? (
         <Guide />
