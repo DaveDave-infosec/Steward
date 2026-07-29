@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { acceptAgreement, reserveCapital, getAgreementRaw, balanceOf } from "./lib/contracts";
+import { acceptAgreement, reserveCapital, getAgreementRaw, balanceOf, cancelAgreement } from "./lib/contracts";
 import { executeReview } from "./lib/review";
 
 function CapitalBar({ reserved, released, withheld, revoked }: { reserved: number; released: number; withheld: number; revoked: number }) {
@@ -25,6 +25,7 @@ function CapitalBar({ reserved, released, withheld, revoked }: { reserved: numbe
 
 export function AgreementCard({ agreement, address, onChanged, autoBusy, autoKey }: { agreement: any; address: string; onChanged: () => void; autoBusy?: boolean; autoKey?: string | null }) {
   const [busy, setBusy] = useState(false);
+  const [action, setAction] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [verdict, setVerdict] = useState<any>(null);
@@ -37,8 +38,8 @@ export function AgreementCard({ agreement, address, onChanged, autoBusy, autoKey
   const trancheSum = a.checkpoints.reduce((s: number, c: any) => s + c.tranche_amount, 0);
   const revoked = a.status === "cancelled" ? Math.max(0, trancheSum - a.released_total - a.withheld_total - a.reserved) : 0;
 
-  async function run(label: string, expectFrom: string, fn: () => Promise<any>) {
-    setBusy(true); setErr(null); setMsg(label);
+  async function run(label: string, expectFrom: string, actionKey: string, fn: () => Promise<any>) {
+    setBusy(true); setAction(actionKey); setErr(null); setMsg(label);
     try {
       await fn();
       let ag = await getAgreementRaw(a.agreement_id);
@@ -51,18 +52,16 @@ export function AgreementCard({ agreement, address, onChanged, autoBusy, autoKey
       setMsg(null);
       await onChanged();
     } catch (e: any) { setErr(e?.message ?? String(e)); setMsg(null); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setAction(null); }
   }
 
   async function reserveFlow() {
-    setBusy(true); setErr(null); setMsg("Checking balance…");
+    setBusy(true); setAction("reserve"); setErr(null); setMsg("Checking balance…");
     try {
       const bal = await balanceOf(address);
       if (bal < trancheSum) {
         setErr("Insufficient genUSDC — you need " + trancheSum + ", you have " + bal + ". Click \"Mint 10000\" above, then try again.");
-        setMsg(null);
-        setBusy(false);
-        return;
+        setMsg(null); setBusy(false); setAction(null); return;
       }
       setMsg("Reserving…");
       await reserveCapital(address, a.agreement_id, trancheSum);
@@ -73,33 +72,23 @@ export function AgreementCard({ agreement, address, onChanged, autoBusy, autoKey
         ag = await getAgreementRaw(a.agreement_id);
         t++;
       }
-      if (ag && ag.status === "accepted") {
-        setErr("Reserve didn't take effect — check your genUSDC balance and try again.");
-      }
+      if (ag && ag.status === "accepted") setErr("Reserve didn't take effect — check your genUSDC balance and try again.");
       setMsg(null);
       await onChanged();
-    } catch (e: any) {
-      setErr(e?.message ?? String(e));
-      setMsg(null);
-    } finally {
-      setBusy(false);
-    }
+    } catch (e: any) { setErr(e?.message ?? String(e)); setMsg(null); }
+    finally { setBusy(false); setAction(null); }
   }
 
   async function runReviewFlow(c: any) {
-    setBusy(true); setErr(null); setVerdict(null);
+    setBusy(true); setAction("review"); setErr(null); setVerdict(null);
     try {
-      const v = await executeReview(address, a.agreement_id, c.index, c.evidence_url, c.criteria, (m) => setMsg(m));
+      const v = await executeReview(address, a.agreement_id, c.index, (m) => setMsg(m));
       setVerdict(v);
       setReviewed((prev) => [...prev, c.index]);
       setMsg(null);
       await onChanged();
-    } catch (e: any) {
-      setErr(e?.message ?? String(e));
-      setMsg(null);
-    } finally {
-      setBusy(false);
-    }
+    } catch (e: any) { setErr(e?.message ?? String(e)); setMsg(null); }
+    finally { setBusy(false); setAction(null); }
   }
 
   const canReview = (c: any) =>
@@ -148,8 +137,8 @@ export function AgreementCard({ agreement, address, onChanged, autoBusy, autoKey
                     {autoKey === thisKey ? "Auto-reviewing…" : "Scheduler will run this"}
                   </button>
                 ) : (
-                  <button className={"primary review-btn" + (busy ? " pending" : "")} disabled={busy} onClick={() => runReviewFlow(c)}>
-                    {busy ? "Reviewing…" : "Run Review"}
+                  <button className={"primary review-btn" + (busy && action === "review" ? " pending" : "")} disabled={busy} onClick={() => runReviewFlow(c)}>
+                    {busy && action === "review" ? "Reviewing…" : "Run Review"}
                   </button>
                 )
               )}
@@ -160,13 +149,18 @@ export function AgreementCard({ agreement, address, onChanged, autoBusy, autoKey
 
       <div className="agr-actions">
         {a.status === "locked" && isRecipient && (
-          <button className={busy ? "pending" : ""} disabled={busy} onClick={() => run("Accepting…", "locked", () => acceptAgreement(address, a.agreement_id))}>
-            {busy ? "Accepting…" : "Accept agreement"}
+          <button className={busy && action === "accept" ? "pending" : ""} disabled={busy} onClick={() => run("Accepting…", "locked", "accept", () => acceptAgreement(address, a.agreement_id))}>
+            {busy && action === "accept" ? "Accepting…" : "Accept agreement"}
           </button>
         )}
         {a.status === "accepted" && isCreator && (
-          <button className={"primary" + (busy ? " pending" : "")} disabled={busy} onClick={reserveFlow}>
-            {busy ? "Reserving…" : "Reserve " + trancheSum + " genUSDC"}
+          <button className={"primary" + (busy && action === "reserve" ? " pending" : "")} disabled={busy} onClick={reserveFlow}>
+            {busy && action === "reserve" ? "Reserving…" : "Reserve " + trancheSum + " genUSDC"}
+          </button>
+        )}
+        {(a.status === "active" || a.status === "accepted") && isCreator && (
+          <button className={busy && action === "cancel" ? "pending" : ""} disabled={busy} onClick={() => run("Cancelling…", a.status, "cancel", () => cancelAgreement(address, a.agreement_id))}>
+            {busy && action === "cancel" ? "Cancelling…" : "Cancel & reclaim"}
           </button>
         )}
         {a.status === "locked" && !isRecipient && <span className="waiting-hint">Awaiting recipient acceptance…</span>}

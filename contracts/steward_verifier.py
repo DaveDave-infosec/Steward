@@ -29,13 +29,17 @@ class StewardVerifier(gl.Contract):
         self,
         agreement_id: str,
         checkpoint_index: int,
-        evidence_url: str,
-        criteria: str,
         submitter: str,
     ) -> str:
         case_id = "steward_" + str(int(self.verdict_counter))
-        local_url = evidence_url
-        local_criteria = criteria
+        # pull canonical checkpoint state directly from the reserve (the vault);
+        # no caller may supply evidence or criteria to a review
+        reserve = gl.get_contract_at(Address("0x27ee3C9E2b070122fe1CE7A64C7B9b2711215BD7"))
+        cp = reserve.view().get_checkpoint(agreement_id, checkpoint_index)
+        if not cp or "evidence_url" not in cp or str(cp["evidence_url"]) == "":
+            raise Exception("unknown checkpoint on reserve")
+        local_url = str(cp["evidence_url"])
+        local_criteria = str(cp["criteria"])
 
         def fetch_evidence() -> str:
             response = gl.nondet.web.get(local_url)
@@ -128,7 +132,7 @@ class StewardVerifier(gl.Contract):
         self.verdict_counter = u256(int(self.verdict_counter) + 1)
         self.v_agreement_id[case_id] = agreement_id
         self.v_checkpoint_index[case_id] = u256(int(checkpoint_index))
-        self.v_evidence_url[case_id] = evidence_url
+        self.v_evidence_url[case_id] = local_url
         self.v_criteria[case_id] = local_criteria
         self.v_fulfillment_pct[case_id] = u256(pct)
         self.v_outcome[case_id] = outcome

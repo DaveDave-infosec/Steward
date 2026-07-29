@@ -4,16 +4,14 @@ export async function executeReview(
   account: string,
   agreementId: string,
   checkpointIndex: number,
-  evidenceUrl: string,
-  criteria: string,
   onPhase?: (msg: string) => void,
 ): Promise<any> {
-  onPhase?.("Reading locked evidence source…");
+  onPhase?.("Reading the locked checkpoint from the vault…");
   const countBefore = await getVerdictCount();
   const caseId = "steward_" + countBefore;
 
   onPhase?.("Validators fetching evidence & judging substance (consensus forming)…");
-  await runReview(account, agreementId, checkpointIndex, evidenceUrl, criteria, account);
+  await runReview(account, agreementId, checkpointIndex, account);
 
   onPhase?.("Reading verdict…");
   let v = await getVerdict(caseId);

@@ -146,6 +146,24 @@ class StewardReserve(gl.Contract):
         self.a_reserved[agreement_id] = u256(int(self.a_reserved[agreement_id]) + amt)
         self.a_status[agreement_id] = "active"
 
+    @gl.public.write
+    def cancel_agreement(self, agreement_id: str):
+        if agreement_id not in self.a_status:
+            raise Exception("unknown agreement")
+        status = self.a_status[agreement_id]
+        if status != "active" and status != "accepted":
+            raise Exception("only an active or accepted agreement can be cancelled")
+        sender = self._sender()
+        if sender != self.owner and sender != self.a_creator[agreement_id]:
+            raise Exception("only owner or creator can cancel")
+        creator = self.a_creator[agreement_id]
+        reserved = int(self.a_reserved[agreement_id])
+        if reserved > 0:
+            cbal = int(self.balances[creator]) if creator in self.balances else 0
+            self.balances[creator] = u256(cbal + reserved)
+            self.a_reserved[agreement_id] = u256(0)
+        self.a_status[agreement_id] = "cancelled"
+
     # ---------- trustless settlement, bound to the verifier's on-chain verdict ----------
     @gl.public.write
     def apply_verdict(self, case_id: str):

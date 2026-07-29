@@ -30,8 +30,8 @@ export async function balanceOf(address: string): Promise<number> {
 export async function getVerdictCount(): Promise<number> {
   return Number(await readContract(VERIFIER_ADDRESS, "get_verdict_count", []));
 }
-export async function runReview(_account: string, agreementId: string, checkpointIndex: number, evidenceUrl: string, criteria: string, submitter: string) {
-  return writeContract(VERIFIER_ADDRESS, "run_review", [agreementId, checkpointIndex, evidenceUrl, criteria, submitter], 120);
+export async function runReview(_account: string, agreementId: string, checkpointIndex: number, submitter: string) {
+  return writeContract(VERIFIER_ADDRESS, "run_review", [agreementId, checkpointIndex, submitter], 120);
 }
 export async function getVerdict(caseId: string): Promise<any> {
   return await readContract(VERIFIER_ADDRESS, "get_verdict", [caseId]);
@@ -58,4 +58,8 @@ export async function reserveCapital(_account: string, agreementId: string, amou
 }
 export async function applyVerdict(_account: string, caseId: string) {
   return writeContract(RESERVE_ADDRESS, "apply_verdict", [caseId], 60);
+}
+
+export async function cancelAgreement(_account: string, agreementId: string) {
+  return writeContract(RESERVE_ADDRESS, "cancel_agreement", [agreementId]);
 }

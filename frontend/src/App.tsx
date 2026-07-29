@@ -122,7 +122,7 @@ export default function App() {
       setAutoKey(ag.agreement_id + "#" + cp.index);
       setSchedulerLog((l) => [new Date().toLocaleTimeString() + " — reviewing " + ag.agreement_id + " · checkpoint " + cp.index + "…", ...l].slice(0, 8));
       try {
-        const v = await executeReview(me, ag.agreement_id, cp.index, cp.evidence_url, cp.criteria);
+        const v = await executeReview(me, ag.agreement_id, cp.index);
         setSchedulerLog((l) => [new Date().toLocaleTimeString() + " — " + ag.agreement_id + " · checkpoint " + cp.index + " → " + v.outcome + " " + Number(v.fulfillment_pct) + "%", ...l].slice(0, 8));
         await refresh();
       } catch (e: any) {
