@@ -158,9 +158,9 @@ export function AgreementCard({ agreement, address, onChanged, autoBusy, autoKey
             {busy && action === "reserve" ? "Reserving…" : "Reserve " + trancheSum + " genUSDC"}
           </button>
         )}
-        {(a.status === "active" || a.status === "accepted") && isCreator && (
+        {a.status === "accepted" && isCreator && (
           <button className={busy && action === "cancel" ? "pending" : ""} disabled={busy} onClick={() => run("Cancelling…", a.status, "cancel", () => cancelAgreement(address, a.agreement_id))}>
-            {busy && action === "cancel" ? "Cancelling…" : "Cancel & reclaim"}
+            {busy && action === "cancel" ? "Cancelling…" : "Cancel agreement"}
           </button>
         )}
         {a.status === "locked" && !isRecipient && <span className="waiting-hint">Awaiting recipient acceptance…</span>}

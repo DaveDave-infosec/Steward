@@ -1,7 +1,7 @@
 import { readContract, writeContract } from "./genlayer";
 
-export const RESERVE_ADDRESS = "0x27ee3C9E2b070122fe1CE7A64C7B9b2711215BD7";
-export const VERIFIER_ADDRESS = "0x1e4Eba962BFF2b118Bc19d8d5304de92f927b622";
+export const RESERVE_ADDRESS = "0xda517A839E0d1000da2262ab48FA0A8052b25Ead";
+export const VERIFIER_ADDRESS = "0xDb920DC240F7D3A1bD5669862215100ACE21209E";
 
 // ---------- reserve reads ----------
 export async function getAllAgreementIds(): Promise<string[]> {

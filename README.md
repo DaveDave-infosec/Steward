@@ -16,7 +16,7 @@ A CI pipeline can mechanically check that a tag exists or that tests pass. It ca
 2. **Accept** — the recipient accepts the same checkpoints. Neither side can move the goalposts afterward.
 3. **Reserve** — the creator reserves genUSDC into the agreement.
 4. **Review** — a review (manual, or fired by the autonomy scheduler) has the verifier contract fetch the locked source, reach validator consensus on whether the criteria are met and to what percentage, and produce a verdict.
-5. **Execute** — the reserve contract moves capital by that verdict: **Release**, **Reduce** (proportional), **Pause**, **Escalate**, or **Cancel** (revoke remaining to treasury).
+5. **Execute** — settlement is permissionless: anyone can relay the verdict, and the reserve contract moves capital by it: **Release**, **Reduce** (proportional), **Pause**, **Escalate**, or **Cancel** (revoke remaining to treasury).
 
 ## Architecture
 
@@ -30,8 +30,8 @@ A CI pipeline can mechanically check that a tag exists or that tests pass. It ca
 |---|---|
 | Network | GenLayer Studio Network |
 | Chain ID | 61999 (0xF22F) |
-| Reserve contract | `0x27ee3C9E2b070122fe1CE7A64C7B9b2711215BD7` |
-| Verifier contract | `0x1e4Eba962BFF2b118Bc19d8d5304de92f927b622` |
+| Reserve contract | `0xda517A839E0d1000da2262ab48FA0A8052b25Ead` |
+| Verifier contract | `0xDb920DC240F7D3A1bD5669862215100ACE21209E` |
 
 genUSDC is a mock settlement token for the testnet.
 
@@ -40,14 +40,15 @@ cd frontend
 npm install
 npm run dev
 
-Click **Demo mode** for a free, per-browser test wallet (studionet is gasless — no funding needed), or connect MetaMask. The **Guide** and **How it works** tabs walk through the full flow and the honest V1 limitations.
+Click **Demo mode** for a free, per-browser test wallet (studionet is gasless — no funding needed), or connect MetaMask. The **Guide** and **How it works** tabs walk through the full flow and the honest limitations.
 
-## V1 limitations, stated honestly
+## Design and limitations, stated honestly
 
-- **Settlement is bound to the verdict.** `apply_verdict` takes only a case id: the reserve reads the verdict directly from the verifier contract on-chain (`gl.get_contract_at(...).view()`), requires it to have been produced against the checkpoint's exact locked evidence source and complete criteria, authenticates the transaction sender (`gl.message.sender_address`), accepts only the most recent verdict for that checkpoint, and settles strictly by the verifier's stored fulfilment percentage and outcome. A relayer cannot fake the number, spoof identity, use a verdict from a different repository, or submit an older, more favourable verdict. Repetition remains possible — a creator can re-run a review — but every attempt is recorded on-chain and only the newest verdict can settle.
+- **Settlement is bound to the verdict, not to any person.** `apply_verdict` takes only a case id: the reserve reads the verdict directly from the verifier contract on-chain (`gl.get_contract_at(...).view()`), requires it to have been produced against the checkpoint's exact locked evidence source and complete criteria, and settles strictly by the verifier's stored fulfilment percentage and outcome. Settlement is **permissionless** — the recipient, a keeper, or any unrelated address can relay a verdict; correctness comes from the binding, not the caller, so no one can stall a payment the verdict has already earned. Verdicts are **final**: the reserve accepts only the first verdict produced since the checkpoint last became reviewable, so re-running a review cannot replace a prior verdict with a more favourable one (a Pause or Escalate opens a fresh window, so legitimate retries still work). No one can fake the number, use a verdict from a different repository, or re-roll the outcome.
+- **Cancellation is locked once capital is reserved.** An agreement can be cancelled only before capital is committed. Once it is active, capital moves only by verdict — the creator cannot pull funds back. Nothing is stranded, because every review resolves the checkpoint and returns withheld or revoked capital to the treasury.
 - **Scope.** Software-development grants only; every checkpoint condition must be web-verifiable from developer artifacts.
 - **Evidence window.** The verifier reads a bounded slice of each fetched source.
-- **Scheduler.** The autonomy scheduler is a client-side loop that runs while the app tab is open; a server-side or on-chain trigger is the V2 path.
+- **Scheduler.** The autonomy scheduler is a client-side convenience loop that runs while the app tab is open. Because settlement is permissionless, any external keeper or bot can drive reviews and settlements on-chain independently of it.
 - **Signing.** MetaMask (via the GenLayer Snap) and gasless per-browser demo burners are supported; broader multi-wallet support is on the genlayer-js roadmap.
 
 Built on GenLayer.

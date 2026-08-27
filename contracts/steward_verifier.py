@@ -6,6 +6,7 @@ import re
 
 class StewardVerifier(gl.Contract):
     owner: str
+    reserve_address: str
     verdict_ids: DynArray[str]
     verdict_counter: u256
     v_agreement_id: TreeMap[str, str]
@@ -22,7 +23,21 @@ class StewardVerifier(gl.Contract):
 
     def __init__(self, owner_address: str):
         self.owner = owner_address.lower()
+        self.reserve_address = ""
         self.verdict_counter = u256(0)
+
+    def _sender(self) -> str:
+        return gl.message.sender_address.as_hex.lower()
+
+    @gl.public.write
+    def set_reserve(self, reserve_address: str):
+        if self._sender() != self.owner:
+            raise Exception("only owner can set reserve")
+        self.reserve_address = reserve_address.lower()
+
+    @gl.public.view
+    def get_reserve(self) -> str:
+        return self.reserve_address
 
     @gl.public.write
     def run_review(
@@ -34,7 +49,9 @@ class StewardVerifier(gl.Contract):
         case_id = "steward_" + str(int(self.verdict_counter))
         # pull canonical checkpoint state directly from the reserve (the vault);
         # no caller may supply evidence or criteria to a review
-        reserve = gl.get_contract_at(Address("0x27ee3C9E2b070122fe1CE7A64C7B9b2711215BD7"))
+        if self.reserve_address == "":
+            raise Exception("reserve address not configured")
+        reserve = gl.get_contract_at(Address(self.reserve_address))
         cp = reserve.view().get_checkpoint(agreement_id, checkpoint_index)
         if not cp or "evidence_url" not in cp or str(cp["evidence_url"]) == "":
             raise Exception("unknown checkpoint on reserve")
@@ -167,6 +184,20 @@ class StewardVerifier(gl.Contract):
         idx = int(checkpoint_index)
         for i in range(len(self.verdict_ids) - 1, -1, -1):
             cid = self.verdict_ids[i]
+            if self.v_agreement_id[cid] == agreement_id and int(self.v_checkpoint_index[cid]) == idx:
+                return cid
+        return ""
+
+    @gl.public.view
+    def get_first_case_for_after(self, agreement_id: str, checkpoint_index: int, after_case_id: str) -> str:
+        idx = int(checkpoint_index)
+        started = (after_case_id == "")
+        for i in range(len(self.verdict_ids)):
+            cid = self.verdict_ids[i]
+            if not started:
+                if cid == after_case_id:
+                    started = True
+                continue
             if self.v_agreement_id[cid] == agreement_id and int(self.v_checkpoint_index[cid]) == idx:
                 return cid
         return ""

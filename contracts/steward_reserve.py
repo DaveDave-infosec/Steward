@@ -146,25 +146,26 @@ class StewardReserve(gl.Contract):
         self.a_reserved[agreement_id] = u256(int(self.a_reserved[agreement_id]) + amt)
         self.a_status[agreement_id] = "active"
 
+    # cancellation is only legal BEFORE capital is reserved; once an agreement is
+    # active, capital can move only through a verdict — no human can pull it back.
     @gl.public.write
     def cancel_agreement(self, agreement_id: str):
         if agreement_id not in self.a_status:
             raise Exception("unknown agreement")
         status = self.a_status[agreement_id]
-        if status != "active" and status != "accepted":
-            raise Exception("only an active or accepted agreement can be cancelled")
+        if status == "active":
+            raise Exception("capital is reserved; an active agreement settles only by verdict and cannot be cancelled")
+        if status != "draft" and status != "locked" and status != "accepted":
+            raise Exception("only a pre-reserve agreement can be cancelled")
         sender = self._sender()
         if sender != self.owner and sender != self.a_creator[agreement_id]:
             raise Exception("only owner or creator can cancel")
-        creator = self.a_creator[agreement_id]
-        reserved = int(self.a_reserved[agreement_id])
-        if reserved > 0:
-            cbal = int(self.balances[creator]) if creator in self.balances else 0
-            self.balances[creator] = u256(cbal + reserved)
-            self.a_reserved[agreement_id] = u256(0)
+        self.a_reserved[agreement_id] = u256(0)
         self.a_status[agreement_id] = "cancelled"
 
     # ---------- trustless settlement, bound to the verifier's on-chain verdict ----------
+    # permissionless: anyone may relay a verdict. correctness comes from the binding
+    # below (canonical inputs + first-verdict-per-epoch), not from the caller's identity.
     @gl.public.write
     def apply_verdict(self, case_id: str):
         verifier = gl.get_contract_at(Address(self.verifier_address))
@@ -177,10 +178,6 @@ class StewardReserve(gl.Contract):
 
         if agreement_id not in self.a_status:
             raise Exception("unknown agreement")
-
-        sender = self._sender()
-        if sender != self.owner and sender != self.a_creator[agreement_id]:
-            raise Exception("only owner or agreement creator can relay verdicts")
         if self.a_status[agreement_id] != "active":
             raise Exception("agreement not active")
         if idx != int(self.a_current_index[agreement_id]):
@@ -199,10 +196,14 @@ class StewardReserve(gl.Contract):
         if str(verdict["criteria"]) != self.c_criteria[ck]:
             raise Exception("verdict criteria do not match the locked checkpoint")
 
-        # only the most recent verdict for this checkpoint may settle it
-        latest_case = str(verifier.view().get_latest_case_for(agreement_id, idx))
-        if latest_case != case_id:
-            raise Exception("stale verdict; only the most recent verdict for this checkpoint can settle it")
+        # verdict finality: only the FIRST verdict produced since this checkpoint last
+        # became reviewable is binding. c_case_id holds the last applied verdict (or ""
+        # if never applied), so a Pause/Escalate opens a fresh epoch while terminal
+        # settlement freezes the checkpoint. reruns cannot replace a prior verdict.
+        last_applied = self.c_case_id[ck]
+        binding_case = str(verifier.view().get_first_case_for_after(agreement_id, idx, last_applied))
+        if binding_case != case_id:
+            raise Exception("only the first verdict since this checkpoint became reviewable is binding; reruns cannot replace it")
 
         pct = int(verdict["fulfillment_pct"])
         if pct < 0:
