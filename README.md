@@ -30,8 +30,8 @@ A CI pipeline can mechanically check that a tag exists or that tests pass. It ca
 |---|---|
 | Network | GenLayer Studio Network |
 | Chain ID | 61999 (0xF22F) |
-| Reserve contract | `0xda517A839E0d1000da2262ab48FA0A8052b25Ead` |
-| Verifier contract | `0xDb920DC240F7D3A1bD5669862215100ACE21209E` |
+| Reserve contract | `0xa0858cf642ab3Ff432C135d2dB9a79bA3AE4fa81` |
+| Verifier contract | `0x878daa116D116aa7B8660b3f97fB10349F625b8C` |
 
 genUSDC is a mock settlement token for the testnet.
 
@@ -50,5 +50,9 @@ Click **Demo mode** for a free, per-browser test wallet (studionet is gasless â€
 - **Evidence window.** The verifier reads a bounded slice of each fetched source.
 - **Scheduler.** The autonomy scheduler is a client-side convenience loop that runs while the app tab is open. Because settlement is permissionless, any external keeper or bot can drive reviews and settlements on-chain independently of it.
 - **Signing.** MetaMask (via the GenLayer Snap) and gasless per-browser demo burners are supported; broader multi-wallet support is on the genlayer-js roadmap.
+
+## Tests
+
+The verifier/reserve guard logic is covered by a real two-contract test suite (glsim, in-process GenVM â€” no skips, no copied logic). See [TESTING.md](TESTING.md).
 
 Built on GenLayer.

@@ -4,6 +4,7 @@ import json
 import re
 
 
+@allow_storage
 class StewardVerifier(gl.Contract):
     owner: str
     reserve_address: str
@@ -20,6 +21,8 @@ class StewardVerifier(gl.Contract):
     v_evidence_excerpt: TreeMap[str, str]
     v_submitter: TreeMap[str, str]
     v_parsed_ok: TreeMap[str, str]
+    v_epoch: TreeMap[str, u256]
+    v_epoch_used: TreeMap[str, str]
 
     def __init__(self, owner_address: str):
         self.owner = owner_address.lower()
@@ -47,16 +50,33 @@ class StewardVerifier(gl.Contract):
         submitter: str,
     ) -> str:
         case_id = "steward_" + str(int(self.verdict_counter))
-        # pull canonical checkpoint state directly from the reserve (the vault);
-        # no caller may supply evidence or criteria to a review
+        # pull canonical state directly from the reserve (the vault); no caller may
+        # supply evidence or criteria to a review.
         if self.reserve_address == "":
             raise Exception("reserve address not configured")
         reserve = gl.get_contract_at(Address(self.reserve_address))
+
+        # reviews are only possible for the ACTIVE, CURRENT checkpoint.
+        ag = reserve.view().get_agreement(agreement_id)
+        if not ag or "status" not in ag or str(ag["status"]) == "":
+            raise Exception("unknown agreement on reserve")
+        if str(ag["status"]) != "active":
+            raise Exception("agreement is not active")
+        if int(ag["current_index"]) != int(checkpoint_index):
+            raise Exception("not the current checkpoint")
+
         cp = reserve.view().get_checkpoint(agreement_id, checkpoint_index)
         if not cp or "evidence_url" not in cp or str(cp["evidence_url"]) == "":
             raise Exception("unknown checkpoint on reserve")
         local_url = str(cp["evidence_url"])
         local_criteria = str(cp["criteria"])
+        epoch = int(cp["epoch"])
+
+        # one verdict per review epoch: a fresh review requires a fresh epoch, so a
+        # verdict cannot be re-rolled inside the same epoch.
+        epoch_key = agreement_id + "#" + str(int(checkpoint_index)) + "#" + str(epoch)
+        if epoch_key in self.v_epoch_used:
+            raise Exception("a verdict already exists for this review epoch")
 
         def fetch_evidence() -> str:
             response = gl.nondet.web.get(local_url)
@@ -158,6 +178,8 @@ class StewardVerifier(gl.Contract):
         self.v_evidence_excerpt[case_id] = local_evidence[:400]
         self.v_submitter[case_id] = submitter.lower()
         self.v_parsed_ok[case_id] = parsed_ok
+        self.v_epoch[case_id] = u256(epoch)
+        self.v_epoch_used[epoch_key] = case_id
         return case_id
 
     @gl.public.view
@@ -177,6 +199,7 @@ class StewardVerifier(gl.Contract):
             "evidence_excerpt": self.v_evidence_excerpt[case_id],
             "submitter": self.v_submitter[case_id],
             "parsed_ok": self.v_parsed_ok[case_id],
+            "epoch": int(self.v_epoch[case_id]) if case_id in self.v_epoch else 0,
         }
 
     @gl.public.view
@@ -184,20 +207,6 @@ class StewardVerifier(gl.Contract):
         idx = int(checkpoint_index)
         for i in range(len(self.verdict_ids) - 1, -1, -1):
             cid = self.verdict_ids[i]
-            if self.v_agreement_id[cid] == agreement_id and int(self.v_checkpoint_index[cid]) == idx:
-                return cid
-        return ""
-
-    @gl.public.view
-    def get_first_case_for_after(self, agreement_id: str, checkpoint_index: int, after_case_id: str) -> str:
-        idx = int(checkpoint_index)
-        started = (after_case_id == "")
-        for i in range(len(self.verdict_ids)):
-            cid = self.verdict_ids[i]
-            if not started:
-                if cid == after_case_id:
-                    started = True
-                continue
             if self.v_agreement_id[cid] == agreement_id and int(self.v_checkpoint_index[cid]) == idx:
                 return cid
         return ""

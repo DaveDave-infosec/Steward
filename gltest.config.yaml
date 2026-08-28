@@ -1,0 +1,7 @@
+# Match `url` to whatever glsim prints on boot (glsim --port 4000). The path
+# suffix (/api vs bare /) is the most likely thing to differ across versions.
+networks:
+  default: localnet
+  localnet:
+    url: "http://127.0.0.1:4001/api"
+

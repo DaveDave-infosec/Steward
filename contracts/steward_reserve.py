@@ -3,6 +3,7 @@ from genlayer import *
 import json
 
 
+@allow_storage
 class StewardReserve(gl.Contract):
     owner: str
     fee_wallet: str
@@ -32,6 +33,7 @@ class StewardReserve(gl.Contract):
     c_released: TreeMap[str, u256]
     c_withheld: TreeMap[str, u256]
     c_case_id: TreeMap[str, str]
+    c_epoch: TreeMap[str, u256]
 
     def __init__(self, owner_address: str, fee_wallet_address: str, protocol_fee_bps: int, verifier_address: str):
         self.owner = owner_address.lower()
@@ -101,6 +103,7 @@ class StewardReserve(gl.Contract):
         self.c_released[ck] = u256(0)
         self.c_withheld[ck] = u256(0)
         self.c_case_id[ck] = ""
+        self.c_epoch[ck] = u256(1)
         self.a_checkpoint_count[agreement_id] = u256(idx + 1)
 
     @gl.public.write
@@ -147,7 +150,7 @@ class StewardReserve(gl.Contract):
         self.a_status[agreement_id] = "active"
 
     # cancellation is only legal BEFORE capital is reserved; once an agreement is
-    # active, capital can move only through a verdict — no human can pull it back.
+    # active, capital can move only through a verdict - no human can pull it back.
     @gl.public.write
     def cancel_agreement(self, agreement_id: str):
         if agreement_id not in self.a_status:
@@ -164,13 +167,13 @@ class StewardReserve(gl.Contract):
         self.a_status[agreement_id] = "cancelled"
 
     # ---------- trustless settlement, bound to the verifier's on-chain verdict ----------
-    # permissionless: anyone may relay a verdict. correctness comes from the binding
-    # below (canonical inputs + first-verdict-per-epoch), not from the caller's identity.
+    # permissionless: anyone may relay a verdict. correctness comes from the bindings
+    # below (canonical inputs + explicit review-epoch), not from the caller's identity.
     @gl.public.write
     def apply_verdict(self, case_id: str):
         verifier = gl.get_contract_at(Address(self.verifier_address))
         verdict = verifier.view().get_verdict(case_id)
-        if not verdict or "outcome" not in verdict or str(verdict["outcome"]) == "":
+        if not verdict or "agreement_id" not in verdict or str(verdict["agreement_id"]) == "":
             raise Exception("verdict not found on verifier")
 
         agreement_id = str(verdict["agreement_id"])
@@ -196,21 +199,28 @@ class StewardReserve(gl.Contract):
         if str(verdict["criteria"]) != self.c_criteria[ck]:
             raise Exception("verdict criteria do not match the locked checkpoint")
 
-        # verdict finality: only the FIRST verdict produced since this checkpoint last
-        # became reviewable is binding. c_case_id holds the last applied verdict (or ""
-        # if never applied), so a Pause/Escalate opens a fresh epoch while terminal
-        # settlement freezes the checkpoint. reruns cannot replace a prior verdict.
-        last_applied = self.c_case_id[ck]
-        binding_case = str(verifier.view().get_first_case_for_after(agreement_id, idx, last_applied))
-        if binding_case != case_id:
-            raise Exception("only the first verdict since this checkpoint became reviewable is binding; reruns cannot replace it")
+        # explicit review-epoch binding: the verdict must belong to this checkpoint's
+        # current review epoch. a premature or pre-queued (stale-epoch) verdict is
+        # rejected by number, not by inference.
+        if int(verdict["epoch"]) != int(self.c_epoch[ck]):
+            raise Exception("verdict is from a stale review epoch")
+
+        # safe recovery: a malformed verdict (unparseable, or an invalid outcome) never
+        # settles and never strands. it advances the epoch and reopens the checkpoint so
+        # a fresh review can run. settlement is permissionless, so anyone can clear it.
+        outcome = str(verdict["outcome"])
+        valid = (outcome == "Release" or outcome == "Reduce" or outcome == "Pause"
+                 or outcome == "Escalate" or outcome == "Cancel")
+        if str(verdict["parsed_ok"]) != "yes" or not valid:
+            self.c_epoch[ck] = u256(int(self.c_epoch[ck]) + 1)
+            self.c_status[ck] = "pending"
+            return
 
         pct = int(verdict["fulfillment_pct"])
         if pct < 0:
             pct = 0
         if pct > 100:
             pct = 100
-        outcome = str(verdict["outcome"])
 
         creator = self.a_creator[agreement_id]
         recipient = self.a_recipient[agreement_id]
@@ -221,11 +231,14 @@ class StewardReserve(gl.Contract):
         self.c_fulfillment_pct[ck] = u256(pct)
         self.c_case_id[ck] = case_id
 
+        # non-terminal outcomes reopen the checkpoint under a fresh epoch
         if outcome == "Pause":
             self.c_status[ck] = "paused"
+            self.c_epoch[ck] = u256(int(self.c_epoch[ck]) + 1)
             return
         if outcome == "Escalate":
             self.c_status[ck] = "escalated"
+            self.c_epoch[ck] = u256(int(self.c_epoch[ck]) + 1)
             return
         if outcome == "Cancel":
             cbal = int(self.balances[creator]) if creator in self.balances else 0
@@ -237,10 +250,8 @@ class StewardReserve(gl.Contract):
 
         if outcome == "Release":
             frac = 100
-        elif outcome == "Reduce":
+        else:  # Reduce
             frac = pct
-        else:
-            raise Exception("unknown outcome")
 
         if tranche > reserved:
             raise Exception("tranche exceeds reserved capital")
@@ -306,6 +317,7 @@ class StewardReserve(gl.Contract):
             "released": int(self.c_released[ck]),
             "withheld": int(self.c_withheld[ck]),
             "case_id": self.c_case_id[ck],
+            "epoch": int(self.c_epoch[ck]),
         }
 
     @gl.public.view
@@ -326,6 +338,7 @@ class StewardReserve(gl.Contract):
                 "released": int(self.c_released[ck]),
                 "withheld": int(self.c_withheld[ck]),
                 "case_id": self.c_case_id[ck],
+                "epoch": int(self.c_epoch[ck]),
             })
         return {
             "agreement_id": agreement_id,
