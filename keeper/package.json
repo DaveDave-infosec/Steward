@@ -1,0 +1,13 @@
+{
+  "name": "steward-keeper",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Permissionless autonomous keeper for Steward: polls get_due() and fires run_review -> apply_verdict.",
+  "scripts": {
+    "start": "node keeper.mjs",
+    "once": "ONCE=1 node keeper.mjs"
+  },
+  "dependencies": {
+    "genlayer-js": "*"
+  }
+}

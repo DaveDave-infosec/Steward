@@ -1,25 +1,22 @@
 """
-Steward V2.1 guard tests — the REAL two-contract flow on glsim (RPC runner).
+Steward V3 guard + keeper-due tests — the REAL two-contract flow on glsim.
 
-These exercise the actual verifier + reserve contracts: real cross-contract
-calls, the real epoch and settlement logic. The reviewer's three requirements
-are asserted against the real contracts, no skips and no copied logic:
+Guard tests (V2.1, unchanged behaviour): premature reviews refused, one verdict
+per epoch, permissionless settlement, malformed-first-case recovery, stale-epoch
+rejection.
 
-  - premature cases cannot settle (they cannot even be reviewed),
-  - a pre-queued / stale-epoch verdict cannot settle,
-  - a malformed first verdict cannot strand the agreement.
+Keeper-due tests (V3): the get_due() surface and the next_review_at backoff that
+an off-chain keeper polls. Time is the contract's deterministic transaction
+timestamp; we avoid view-time-warp by contrasting interval=0 (due) with a huge
+interval (backoff removes it from due), proving the next_review_at gate.
 
-Every review is fed a deliberately malformed verdict, so the contract's
-parsed_ok="no" path fires deterministically regardless of how the local
-simulator marshals the mocked LLM result. Verdict content is not what these
-tests assert on — they assert on the contract's guard and recovery logic. The
-happy-path "a valid Release settles and pays out" is verified separately on the
-live studionet deployment.
+No skips, no copied logic.
 
 Run:  python run_glsim.py --port 4001    (separate terminal)
       pytest tests/test_steward_guards.py -q
 """
 
+import json
 import pytest
 from gltest import (
     get_contract_factory,
@@ -38,13 +35,11 @@ CP_CRITERIA = (
     "Python source file (balance)."
 )
 
-# Deliberately unparseable verdict: forces parsed_ok="no" whether the simulator
-# hands the contract a raw string or an already-decoded object.
 MALFORMED_VERDICT = "not-json {oops"
-
 EVIDENCE = '[{"name": "balance.py", "path": "contracts/balance.py", "size": 19056, "type": "file"}]'
-
 SUBMITTER = "0x0000000000000000000000000000000000000000"
+
+BIG_INTERVAL = 10_000_000_000  # ~317 years; pushes next_review_at far past "now"
 
 
 def _validators(vf, verdict):
@@ -82,12 +77,12 @@ def _deploy_pair(acct):
     return verifier, reserve
 
 
-def _make_active(reserve, creator, recipient, n=1, tranche=1000):
+def _make_active(reserve, creator, recipient, n=1, tranche=1000, interval=0):
     total = tranche * n
     reserve.mint(args=[creator.address, total]).transact()
     reserve.create_agreement(args=[recipient.address, total]).transact()
     for _ in range(n):
-        reserve.add_checkpoint(args=["agr_0", CP_URL, CP_CRITERIA, tranche, "once"]).transact()
+        reserve.add_checkpoint(args=["agr_0", CP_URL, CP_CRITERIA, tranche, "once", interval]).transact()
     reserve.finalize_agreement(args=["agr_0"]).transact()
     reserve.connect(recipient).accept_agreement(args=["agr_0"]).transact()
     reserve.reserve_capital(args=["agr_0", total]).transact()
@@ -99,6 +94,12 @@ def _review(verifier, vf, idx=0):
     return verifier.get_latest_case_for(args=["agr_0", idx]).call()
 
 
+def _due_ids(reserve):
+    return [d["agreement_id"] for d in json.loads(reserve.get_due(args=[]).call())]
+
+
+# ============================ guard tests (V2.1) ============================
+
 def test_review_refused_when_not_active():
     acct = get_default_account()
     bob = create_account()
@@ -107,7 +108,7 @@ def test_review_refused_when_not_active():
 
     reserve.mint(args=[acct.address, 1000]).transact()
     reserve.create_agreement(args=[bob.address, 1000]).transact()
-    reserve.add_checkpoint(args=["agr_0", CP_URL, CP_CRITERIA, 1000, "once"]).transact()
+    reserve.add_checkpoint(args=["agr_0", CP_URL, CP_CRITERIA, 1000, "once", 0]).transact()
     reserve.finalize_agreement(args=["agr_0"]).transact()
     reserve.connect(bob).accept_agreement(args=["agr_0"]).transact()
 
@@ -188,3 +189,46 @@ def test_stale_epoch_verdict_cannot_settle():
 
     _review(verifier, vf)
     _expect_revert(lambda: reserve.apply_verdict(args=[v_stale]).transact())
+
+
+# ============================ keeper-due tests (V3) ============================
+
+def test_active_checkpoint_is_due():
+    acct = get_default_account()
+    bob = create_account()
+    verifier, reserve = _deploy_pair(acct)
+    _make_active(reserve, acct, bob, interval=0)
+
+    assert "agr_0" in _due_ids(reserve)
+
+
+def test_non_active_agreement_is_not_due():
+    acct = get_default_account()
+    bob = create_account()
+    verifier, reserve = _deploy_pair(acct)
+
+    reserve.mint(args=[acct.address, 1000]).transact()
+    reserve.create_agreement(args=[bob.address, 1000]).transact()
+    reserve.add_checkpoint(args=["agr_0", CP_URL, CP_CRITERIA, 1000, "once", 0]).transact()
+    reserve.finalize_agreement(args=["agr_0"]).transact()
+    reserve.connect(bob).accept_agreement(args=["agr_0"]).transact()
+
+    assert _due_ids(reserve) == []
+
+
+def test_backoff_removes_checkpoint_from_due():
+    acct = get_default_account()
+    bob = create_account()
+    vf = get_validator_factory()
+    verifier, reserve = _deploy_pair(acct)
+    _make_active(reserve, acct, bob, interval=BIG_INTERVAL)
+
+    assert "agr_0" in _due_ids(reserve)
+
+    v_bad = _review(verifier, vf)
+    assert tx_execution_succeeded(reserve.apply_verdict(args=[v_bad]).transact())
+
+    cp = reserve.get_checkpoint(args=["agr_0", 0]).call()
+    assert cp["status"] == "pending"
+    assert cp["next_review_at"] > 0
+    assert "agr_0" not in _due_ids(reserve)

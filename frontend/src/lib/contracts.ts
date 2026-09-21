@@ -1,6 +1,6 @@
 import { readContract, writeContract } from "./genlayer";
 
-export const RESERVE_ADDRESS = "0xa0858cf642ab3Ff432C135d2dB9a79bA3AE4fa81";
+export const RESERVE_ADDRESS = "0xAeB509dA9D0e93Ef1979da953a194Ab81684f19A";
 export const VERIFIER_ADDRESS = "0x878daa116D116aa7B8660b3f97fB10349F625b8C";
 
 // ---------- reserve reads ----------
@@ -44,8 +44,8 @@ export async function mint(_account: string, toAddress: string, amount: number) 
 export async function createAgreement(_account: string, recipient: string, maxAllocation: number) {
   return writeContract(RESERVE_ADDRESS, "create_agreement", [recipient, maxAllocation]);
 }
-export async function addCheckpoint(_account: string, agreementId: string, evidenceUrl: string, criteria: string, trancheAmount: number, reviewCadence: string) {
-  return writeContract(RESERVE_ADDRESS, "add_checkpoint", [agreementId, evidenceUrl, criteria, trancheAmount, reviewCadence]);
+export async function addCheckpoint(_account: string, agreementId: string, evidenceUrl: string, criteria: string, trancheAmount: number, reviewCadence: string, reviewInterval: number = 0) {
+  return writeContract(RESERVE_ADDRESS, "add_checkpoint", [agreementId, evidenceUrl, criteria, trancheAmount, reviewCadence, reviewInterval]);
 }
 export async function finalizeAgreement(_account: string, agreementId: string) {
   return writeContract(RESERVE_ADDRESS, "finalize_agreement", [agreementId]);

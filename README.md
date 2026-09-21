@@ -30,7 +30,7 @@ A CI pipeline can mechanically check that a tag exists or that tests pass. It ca
 |---|---|
 | Network | GenLayer Studio Network |
 | Chain ID | 61999 (0xF22F) |
-| Reserve contract | `0xa0858cf642ab3Ff432C135d2dB9a79bA3AE4fa81` |
+| Reserve contract | `0xAeB509dA9D0e93Ef1979da953a194Ab81684f19A` |
 | Verifier contract | `0x878daa116D116aa7B8660b3f97fB10349F625b8C` |
 
 genUSDC is a mock settlement token for the testnet.
@@ -54,5 +54,9 @@ Click **Demo mode** for a free, per-browser test wallet (studionet is gasless �
 ## Tests
 
 The verifier/reserve guard logic is covered by a real two-contract test suite (glsim, in-process GenVM — no skips, no copied logic). See [TESTING.md](TESTING.md).
+
+## Autonomous keeper (V3)
+
+Settlement is permissionless, so an off-chain keeper can drive the whole pipeline with no human trigger: it polls the reserve's `get_due()` view and fires `run_review` -> `apply_verdict` for every checkpoint that is ready. Capital releases the moment a milestone is verifiably met. The keeper holds no privilege — it can only trigger verdict-bound settlement, never change it — so anyone can run one. See [keeper/](keeper/).
 
 Built on GenLayer.

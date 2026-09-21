@@ -1,6 +1,7 @@
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
 from genlayer import *
 import json
+from datetime import datetime, timezone
 
 
 @allow_storage
@@ -34,6 +35,8 @@ class StewardReserve(gl.Contract):
     c_withheld: TreeMap[str, u256]
     c_case_id: TreeMap[str, str]
     c_epoch: TreeMap[str, u256]
+    c_review_interval: TreeMap[str, u256]
+    c_next_review_at: TreeMap[str, u256]
 
     def __init__(self, owner_address: str, fee_wallet_address: str, protocol_fee_bps: int, verifier_address: str):
         self.owner = owner_address.lower()
@@ -45,7 +48,9 @@ class StewardReserve(gl.Contract):
     def _sender(self) -> str:
         return gl.message.sender_address.as_hex.lower()
 
-    # ---------- token faucet ----------
+    def _now(self) -> int:
+        return int(datetime.now(timezone.utc).timestamp())
+
     @gl.public.write
     def mint(self, to_address: str, amount: int):
         to_address = to_address.lower()
@@ -66,7 +71,6 @@ class StewardReserve(gl.Contract):
             "verifier": self.verifier_address,
         }
 
-    # ---------- agreement lifecycle (sender-authenticated) ----------
     @gl.public.write
     def create_agreement(self, recipient: str, max_allocation: int) -> str:
         creator = self._sender()
@@ -85,7 +89,7 @@ class StewardReserve(gl.Contract):
         return agreement_id
 
     @gl.public.write
-    def add_checkpoint(self, agreement_id: str, evidence_url: str, criteria: str, tranche_amount: int, review_cadence: str):
+    def add_checkpoint(self, agreement_id: str, evidence_url: str, criteria: str, tranche_amount: int, review_cadence: str, review_interval: int):
         if agreement_id not in self.a_status:
             raise Exception("unknown agreement")
         if self.a_status[agreement_id] != "draft":
@@ -104,6 +108,11 @@ class StewardReserve(gl.Contract):
         self.c_withheld[ck] = u256(0)
         self.c_case_id[ck] = ""
         self.c_epoch[ck] = u256(1)
+        iv = int(review_interval)
+        if iv < 0:
+            iv = 0
+        self.c_review_interval[ck] = u256(iv)
+        self.c_next_review_at[ck] = u256(0)
         self.a_checkpoint_count[agreement_id] = u256(idx + 1)
 
     @gl.public.write
@@ -149,8 +158,6 @@ class StewardReserve(gl.Contract):
         self.a_reserved[agreement_id] = u256(int(self.a_reserved[agreement_id]) + amt)
         self.a_status[agreement_id] = "active"
 
-    # cancellation is only legal BEFORE capital is reserved; once an agreement is
-    # active, capital can move only through a verdict - no human can pull it back.
     @gl.public.write
     def cancel_agreement(self, agreement_id: str):
         if agreement_id not in self.a_status:
@@ -166,9 +173,6 @@ class StewardReserve(gl.Contract):
         self.a_reserved[agreement_id] = u256(0)
         self.a_status[agreement_id] = "cancelled"
 
-    # ---------- trustless settlement, bound to the verifier's on-chain verdict ----------
-    # permissionless: anyone may relay a verdict. correctness comes from the bindings
-    # below (canonical inputs + explicit review-epoch), not from the caller's identity.
     @gl.public.write
     def apply_verdict(self, case_id: str):
         verifier = gl.get_contract_at(Address(self.verifier_address))
@@ -193,27 +197,24 @@ class StewardReserve(gl.Contract):
         if st != "pending" and st != "paused" and st != "escalated":
             raise Exception("checkpoint already resolved")
 
-        # the verdict must have been produced against THIS checkpoint's locked inputs
         if str(verdict["evidence_url"]) != self.c_evidence_url[ck]:
             raise Exception("verdict evidence source does not match the locked checkpoint")
         if str(verdict["criteria"]) != self.c_criteria[ck]:
             raise Exception("verdict criteria do not match the locked checkpoint")
 
-        # explicit review-epoch binding: the verdict must belong to this checkpoint's
-        # current review epoch. a premature or pre-queued (stale-epoch) verdict is
-        # rejected by number, not by inference.
         if int(verdict["epoch"]) != int(self.c_epoch[ck]):
             raise Exception("verdict is from a stale review epoch")
 
-        # safe recovery: a malformed verdict (unparseable, or an invalid outcome) never
-        # settles and never strands. it advances the epoch and reopens the checkpoint so
-        # a fresh review can run. settlement is permissionless, so anyone can clear it.
+        now = self._now()
+        interval = int(self.c_review_interval[ck])
+
         outcome = str(verdict["outcome"])
         valid = (outcome == "Release" or outcome == "Reduce" or outcome == "Pause"
                  or outcome == "Escalate" or outcome == "Cancel")
         if str(verdict["parsed_ok"]) != "yes" or not valid:
             self.c_epoch[ck] = u256(int(self.c_epoch[ck]) + 1)
             self.c_status[ck] = "pending"
+            self.c_next_review_at[ck] = u256(now + interval)
             return
 
         pct = int(verdict["fulfillment_pct"])
@@ -231,14 +232,15 @@ class StewardReserve(gl.Contract):
         self.c_fulfillment_pct[ck] = u256(pct)
         self.c_case_id[ck] = case_id
 
-        # non-terminal outcomes reopen the checkpoint under a fresh epoch
         if outcome == "Pause":
             self.c_status[ck] = "paused"
             self.c_epoch[ck] = u256(int(self.c_epoch[ck]) + 1)
+            self.c_next_review_at[ck] = u256(now + interval)
             return
         if outcome == "Escalate":
             self.c_status[ck] = "escalated"
             self.c_epoch[ck] = u256(int(self.c_epoch[ck]) + 1)
+            self.c_next_review_at[ck] = u256(now + interval)
             return
         if outcome == "Cancel":
             cbal = int(self.balances[creator]) if creator in self.balances else 0
@@ -250,7 +252,7 @@ class StewardReserve(gl.Contract):
 
         if outcome == "Release":
             frac = 100
-        else:  # Reduce
+        else:
             frac = pct
 
         if tranche > reserved:
@@ -282,7 +284,6 @@ class StewardReserve(gl.Contract):
         if nxt >= int(self.a_checkpoint_count[agreement_id]):
             self.a_status[agreement_id] = "completed"
 
-    # ---------- views ----------
     @gl.public.view
     def get_agreement(self, agreement_id: str) -> dict:
         if agreement_id not in self.a_status:
@@ -318,6 +319,8 @@ class StewardReserve(gl.Contract):
             "withheld": int(self.c_withheld[ck]),
             "case_id": self.c_case_id[ck],
             "epoch": int(self.c_epoch[ck]),
+            "review_interval": int(self.c_review_interval[ck]),
+            "next_review_at": int(self.c_next_review_at[ck]),
         }
 
     @gl.public.view
@@ -339,6 +342,8 @@ class StewardReserve(gl.Contract):
                 "withheld": int(self.c_withheld[ck]),
                 "case_id": self.c_case_id[ck],
                 "epoch": int(self.c_epoch[ck]),
+                "review_interval": int(self.c_review_interval[ck]),
+                "next_review_at": int(self.c_next_review_at[ck]),
             })
         return {
             "agreement_id": agreement_id,
@@ -353,6 +358,29 @@ class StewardReserve(gl.Contract):
             "current_index": int(self.a_current_index[agreement_id]),
             "checkpoints_json": json.dumps(cps),
         }
+
+    @gl.public.view
+    def get_due(self) -> str:
+        now = self._now()
+        out = []
+        for i in range(len(self.agreement_ids)):
+            aid = self.agreement_ids[i]
+            if self.a_status[aid] != "active":
+                continue
+            idx = int(self.a_current_index[aid])
+            ck = aid + "#" + str(idx)
+            if ck not in self.c_status:
+                continue
+            st = self.c_status[ck]
+            if st != "pending" and st != "paused" and st != "escalated":
+                continue
+            if now >= int(self.c_next_review_at[ck]):
+                out.append({
+                    "agreement_id": aid,
+                    "checkpoint_index": idx,
+                    "epoch": int(self.c_epoch[ck]),
+                })
+        return json.dumps(out)
 
     @gl.public.view
     def get_agreements_for(self, address: str) -> list:
