@@ -30,8 +30,8 @@ A CI pipeline can mechanically check that a tag exists or that tests pass. It ca
 |---|---|
 | Network | GenLayer Studio Network |
 | Chain ID | 61999 (0xF22F) |
-| Reserve contract | `0xAeB509dA9D0e93Ef1979da953a194Ab81684f19A` |
-| Verifier contract | `0x878daa116D116aa7B8660b3f97fB10349F625b8C` |
+| Reserve contract | `0xbeE3012AAb27a0b345a5d9e84971771891BCd573` |
+| Verifier contract | `0x2e5c25330166a9B194F634fB2F860BE571CcA32A` |
 
 genUSDC is a mock settlement token for the testnet.
 
