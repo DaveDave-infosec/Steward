@@ -232,3 +232,85 @@ def test_backoff_removes_checkpoint_from_due():
     assert cp["status"] == "pending"
     assert cp["next_review_at"] > 0
     assert "agr_0" not in _due_ids(reserve)
+
+
+# ============ V3.1: verifier state is scoped to the reserve instance ============
+
+def _deploy_verifier(acct):
+    return get_contract_factory(contract_file_path=VERIFIER).deploy(
+        args=[acct.address], account=acct
+    )
+
+
+def _deploy_reserve(acct, verifier):
+    return get_contract_factory(contract_file_path=RESERVE).deploy(
+        args=[acct.address, acct.address, 100, verifier.address], account=acct
+    )
+
+
+def _make_active_on(reserve, creator, recipient, tranche=1000, interval=0):
+    reserve.mint(args=[creator.address, tranche]).transact()
+    reserve.create_agreement(args=[recipient.address, tranche]).transact()
+    reserve.add_checkpoint(args=["agr_0", CP_URL, CP_CRITERIA, tranche, "once", interval]).transact()
+    reserve.finalize_agreement(args=["agr_0"]).transact()
+    reserve.connect(recipient).accept_agreement(args=["agr_0"]).transact()
+    reserve.reserve_capital(args=["agr_0", tranche]).transact()
+    return "agr_0"
+
+
+def test_verdict_cannot_settle_a_different_reserve():
+    """A verdict minted against reserve A must not settle reserve B, even though
+    both hold an agr_0 with the same locked URL, criteria and epoch."""
+    acct = get_default_account()
+    bob = create_account()
+    vf = get_validator_factory()
+
+    verifier = _deploy_verifier(acct)
+    reserve_a = _deploy_reserve(acct, verifier)
+    reserve_b = _deploy_reserve(acct, verifier)
+
+    _make_active_on(reserve_a, acct, bob)
+    _make_active_on(reserve_b, acct, bob)
+
+    assert tx_execution_succeeded(verifier.set_reserve(args=[reserve_a.address]).transact())
+    verifier.run_review(args=["agr_0", 0, SUBMITTER]).transact(transaction_context=_ctx(vf))
+    case_a = verifier.get_latest_case_for(args=["agr_0", 0]).call()
+    assert case_a
+
+    # the verdict carries the reserve it was produced against
+    assert verifier.get_verdict(args=[case_a]).call()["reserve"].lower() == reserve_a.address.lower()
+
+    # it must NOT settle reserve B
+    _expect_revert(lambda: reserve_b.apply_verdict(args=[case_a]).transact())
+    ag_b = reserve_b.get_agreement(args=["agr_0"]).call()
+    assert ag_b["status"] == "active"
+    assert ag_b["reserved"] == 1000
+
+    # and the legitimate path is untouched: it still applies to its own reserve
+    assert tx_execution_succeeded(reserve_a.apply_verdict(args=[case_a]).transact())
+
+
+def test_epoch_key_is_scoped_per_reserve():
+    """Reserve A burning the agr_0 / index 0 / epoch 1 review slot must not block
+    reserve B's identical slot on the same shared verifier."""
+    acct = get_default_account()
+    bob = create_account()
+    vf = get_validator_factory()
+
+    verifier = _deploy_verifier(acct)
+    reserve_a = _deploy_reserve(acct, verifier)
+    reserve_b = _deploy_reserve(acct, verifier)
+
+    _make_active_on(reserve_a, acct, bob)
+    _make_active_on(reserve_b, acct, bob)
+
+    assert tx_execution_succeeded(verifier.set_reserve(args=[reserve_a.address]).transact())
+    assert tx_execution_succeeded(
+        verifier.run_review(args=["agr_0", 0, SUBMITTER]).transact(transaction_context=_ctx(vf))
+    )
+
+    # same agreement id, index and epoch on a different reserve: still reviewable
+    assert tx_execution_succeeded(verifier.set_reserve(args=[reserve_b.address]).transact())
+    assert tx_execution_succeeded(
+        verifier.run_review(args=["agr_0", 0, SUBMITTER]).transact(transaction_context=_ctx(vf))
+    )

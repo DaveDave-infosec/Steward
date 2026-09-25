@@ -48,6 +48,9 @@ class StewardReserve(gl.Contract):
     def _sender(self) -> str:
         return gl.message.sender_address.as_hex.lower()
 
+    def _self_address(self) -> str:
+        return gl.message.contract_address.as_hex.lower()
+
     def _now(self) -> int:
         return int(datetime.now(timezone.utc).timestamp())
 
@@ -179,6 +182,13 @@ class StewardReserve(gl.Contract):
         verdict = verifier.view().get_verdict(case_id)
         if not verdict or "agreement_id" not in verdict or str(verdict["agreement_id"]) == "":
             raise Exception("verdict not found on verifier")
+
+        # the verdict must have been produced against THIS reserve instance.
+        # agreement ids restart per deployment, so without this binding a verdict
+        # minted for another reserve (with a colliding id, url, criteria and epoch)
+        # could settle here.
+        if str(verdict["reserve"]).lower() != self._self_address():
+            raise Exception("verdict was produced against a different reserve")
 
         agreement_id = str(verdict["agreement_id"])
         idx = int(verdict["checkpoint_index"])

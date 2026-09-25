@@ -23,6 +23,7 @@ class StewardVerifier(gl.Contract):
     v_parsed_ok: TreeMap[str, str]
     v_epoch: TreeMap[str, u256]
     v_epoch_used: TreeMap[str, str]
+    v_reserve: TreeMap[str, str]
 
     def __init__(self, owner_address: str):
         self.owner = owner_address.lower()
@@ -50,13 +51,11 @@ class StewardVerifier(gl.Contract):
         submitter: str,
     ) -> str:
         case_id = "steward_" + str(int(self.verdict_counter))
-        # pull canonical state directly from the reserve (the vault); no caller may
-        # supply evidence or criteria to a review.
         if self.reserve_address == "":
             raise Exception("reserve address not configured")
-        reserve = gl.get_contract_at(Address(self.reserve_address))
+        reserve_addr = self.reserve_address
+        reserve = gl.get_contract_at(Address(reserve_addr))
 
-        # reviews are only possible for the ACTIVE, CURRENT checkpoint.
         ag = reserve.view().get_agreement(agreement_id)
         if not ag or "status" not in ag or str(ag["status"]) == "":
             raise Exception("unknown agreement on reserve")
@@ -72,9 +71,10 @@ class StewardVerifier(gl.Contract):
         local_criteria = str(cp["criteria"])
         epoch = int(cp["epoch"])
 
-        # one verdict per review epoch: a fresh review requires a fresh epoch, so a
-        # verdict cannot be re-rolled inside the same epoch.
-        epoch_key = agreement_id + "#" + str(int(checkpoint_index)) + "#" + str(epoch)
+        # one verdict per review epoch, SCOPED TO THE RESERVE INSTANCE. agreement ids
+        # restart per reserve deployment, so an unscoped key would let one reserve's
+        # agr_0 burn the key space of another reserve's agr_0.
+        epoch_key = reserve_addr + "#" + agreement_id + "#" + str(int(checkpoint_index)) + "#" + str(epoch)
         if epoch_key in self.v_epoch_used:
             raise Exception("a verdict already exists for this review epoch")
 
@@ -179,6 +179,9 @@ class StewardVerifier(gl.Contract):
         self.v_submitter[case_id] = submitter.lower()
         self.v_parsed_ok[case_id] = parsed_ok
         self.v_epoch[case_id] = u256(epoch)
+        # stamp the reserve this verdict was produced against, so it can never
+        # settle a different reserve instance
+        self.v_reserve[case_id] = reserve_addr
         self.v_epoch_used[epoch_key] = case_id
         return case_id
 
@@ -200,13 +203,18 @@ class StewardVerifier(gl.Contract):
             "submitter": self.v_submitter[case_id],
             "parsed_ok": self.v_parsed_ok[case_id],
             "epoch": int(self.v_epoch[case_id]) if case_id in self.v_epoch else 0,
+            "reserve": self.v_reserve[case_id] if case_id in self.v_reserve else "",
         }
 
+    # only cases produced against the CURRENT reserve are visible here, so a
+    # keeper can never pick up a verdict minted for a previous deployment.
     @gl.public.view
     def get_latest_case_for(self, agreement_id: str, checkpoint_index: int) -> str:
         idx = int(checkpoint_index)
         for i in range(len(self.verdict_ids) - 1, -1, -1):
             cid = self.verdict_ids[i]
+            if cid not in self.v_reserve or self.v_reserve[cid] != self.reserve_address:
+                continue
             if self.v_agreement_id[cid] == agreement_id and int(self.v_checkpoint_index[cid]) == idx:
                 return cid
         return ""
