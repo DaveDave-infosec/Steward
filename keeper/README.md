@@ -9,8 +9,8 @@ It holds no privilege: settlement is bound to the on-chain verdict, so the keepe
     cd keeper
     npm install
     # PowerShell:
-    $env:RESERVE_ADDRESS="0xbeE3012AAb27a0b345a5d9e84971771891BCd573"
-    $env:VERIFIER_ADDRESS="0x2e5c25330166a9B194F634fB2F860BE571CcA32A"
+    $env:RESERVE_ADDRESS="0x04E5ea5f57d42a3724E01e5D8D7ccaAF4E074612"
+    $env:VERIFIER_ADDRESS="0x638cBCe0FA412c43979A7E33a864727d2296CC98"
     node keeper.mjs          # continuous loop
     # single pass (cron/CI):  $env:ONCE="1"; node keeper.mjs
 

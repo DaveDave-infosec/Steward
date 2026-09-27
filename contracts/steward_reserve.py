@@ -54,11 +54,17 @@ class StewardReserve(gl.Contract):
     def _now(self) -> int:
         return int(datetime.now(timezone.utc).timestamp())
 
+    # testnet faucet: callers may only fund themselves, in bounded amounts.
     @gl.public.write
     def mint(self, to_address: str, amount: int):
         to_address = to_address.lower()
+        if to_address != self._sender():
+            raise Exception("faucet mints only to the caller")
+        amt = int(amount)
+        if amt <= 0 or amt > 10000:
+            raise Exception("faucet amount must be between 1 and 10000")
         cur = self.balances[to_address] if to_address in self.balances else u256(0)
-        self.balances[to_address] = u256(int(cur) + amount)
+        self.balances[to_address] = u256(int(cur) + amt)
 
     @gl.public.view
     def balance_of(self, address: str) -> int:
@@ -160,6 +166,11 @@ class StewardReserve(gl.Contract):
         self.balances[creator] = u256(bal - amt)
         self.a_reserved[agreement_id] = u256(int(self.a_reserved[agreement_id]) + amt)
         self.a_status[agreement_id] = "active"
+        # activating an agreement schedules an explicit due time for its current
+        # checkpoint; there is no implicit "0 means due now" sentinel.
+        ck0 = agreement_id + "#" + str(int(self.a_current_index[agreement_id]))
+        if ck0 in self.c_status:
+            self.c_next_review_at[ck0] = u256(self._now() + int(self.c_review_interval[ck0]))
 
     @gl.public.write
     def cancel_agreement(self, agreement_id: str):
@@ -221,17 +232,31 @@ class StewardReserve(gl.Contract):
         outcome = str(verdict["outcome"])
         valid = (outcome == "Release" or outcome == "Reduce" or outcome == "Pause"
                  or outcome == "Escalate" or outcome == "Cancel")
-        if str(verdict["parsed_ok"]) != "yes" or not valid:
-            self.c_epoch[ck] = u256(int(self.c_epoch[ck]) + 1)
-            self.c_status[ck] = "pending"
-            self.c_next_review_at[ck] = u256(now + interval)
-            return
 
         pct = int(verdict["fulfillment_pct"])
         if pct < 0:
             pct = 0
         if pct > 100:
             pct = 100
+
+        # the documented outcome-to-fulfillment relationship is enforced before any
+        # capital moves: Release >= 85, Reduce 15-84, Cancel < 15. Pause and Escalate
+        # move no capital and carry no fulfillment constraint.
+        consistent = True
+        if outcome == "Release":
+            consistent = pct >= 85
+        elif outcome == "Reduce":
+            consistent = pct >= 15 and pct <= 84
+        elif outcome == "Cancel":
+            consistent = pct < 15
+
+        # unparseable, unknown, or internally inconsistent verdicts never settle and
+        # never strand: the checkpoint reopens under a fresh epoch with a backoff.
+        if str(verdict["parsed_ok"]) != "yes" or not valid or not consistent:
+            self.c_epoch[ck] = u256(int(self.c_epoch[ck]) + 1)
+            self.c_status[ck] = "pending"
+            self.c_next_review_at[ck] = u256(now + interval)
+            return
 
         creator = self.a_creator[agreement_id]
         recipient = self.a_recipient[agreement_id]
@@ -293,6 +318,11 @@ class StewardReserve(gl.Contract):
         self.a_current_index[agreement_id] = u256(nxt)
         if nxt >= int(self.a_checkpoint_count[agreement_id]):
             self.a_status[agreement_id] = "completed"
+        else:
+            # the newly current checkpoint gets its own explicit due time
+            nck = agreement_id + "#" + str(nxt)
+            if nck in self.c_status:
+                self.c_next_review_at[nck] = u256(now + int(self.c_review_interval[nck]))
 
     @gl.public.view
     def get_agreement(self, agreement_id: str) -> dict:

@@ -1,16 +1,15 @@
 """
-Steward V3 guard + keeper-due tests — the REAL two-contract flow on glsim.
+Steward guard, keeper-due, scoping and outcome tests — the REAL two-contract
+flow on glsim. No skips, no copied logic.
 
-Guard tests (V2.1, unchanged behaviour): premature reviews refused, one verdict
-per epoch, permissionless settlement, malformed-first-case recovery, stale-epoch
-rejection.
-
-Keeper-due tests (V3): the get_due() surface and the next_review_at backoff that
-an off-chain keeper polls. Time is the contract's deterministic transaction
-timestamp; we avoid view-time-warp by contrasting interval=0 (due) with a huge
-interval (backoff removes it from due), proving the next_review_at gate.
-
-No skips, no copied logic.
+Covers:
+  - settlement guards (premature review, one verdict per epoch, permissionless
+    settlement, malformed recovery, stale epoch),
+  - the keeper due surface and explicitly scheduled due times (rejected in BOTH
+    due discovery and review execution),
+  - reserve-instance scoping of verifier state,
+  - every valid outcome and the exact checkpoint state and balance movement it
+    produces, plus an internally inconsistent verdict refusing to settle.
 
 Run:  python run_glsim.py --port 4001    (separate terminal)
       pytest tests/test_steward_guards.py -q
@@ -40,6 +39,15 @@ EVIDENCE = '[{"name": "balance.py", "path": "contracts/balance.py", "size": 1905
 SUBMITTER = "0x0000000000000000000000000000000000000000"
 
 BIG_INTERVAL = 10_000_000_000  # ~317 years; pushes next_review_at far past "now"
+
+
+def _verdict(outcome, pct, reasoning="judged from the locked evidence"):
+    return json.dumps({
+        "fulfillment_pct": pct,
+        "outcome": outcome,
+        "reasoning": reasoning,
+        "minority_note": "",
+    })
 
 
 def _validators(vf, verdict):
@@ -77,6 +85,18 @@ def _deploy_pair(acct):
     return verifier, reserve
 
 
+def _deploy_with_fee_wallet(acct, fee):
+    """Deploy with a DISTINCT fee wallet so balance movements are unambiguous."""
+    verifier = get_contract_factory(contract_file_path=VERIFIER).deploy(
+        args=[acct.address], account=acct
+    )
+    reserve = get_contract_factory(contract_file_path=RESERVE).deploy(
+        args=[acct.address, fee.address, 100, verifier.address], account=acct
+    )
+    assert tx_execution_succeeded(verifier.set_reserve(args=[reserve.address]).transact())
+    return verifier, reserve
+
+
 def _make_active(reserve, creator, recipient, n=1, tranche=1000, interval=0):
     total = tranche * n
     reserve.mint(args=[creator.address, total]).transact()
@@ -89,16 +109,27 @@ def _make_active(reserve, creator, recipient, n=1, tranche=1000, interval=0):
     return "agr_0"
 
 
-def _review(verifier, vf, idx=0):
-    verifier.run_review(args=["agr_0", idx, SUBMITTER]).transact(transaction_context=_ctx(vf))
+def _review(verifier, vf, idx=0, verdict=MALFORMED_VERDICT):
+    verifier.run_review(args=["agr_0", idx, SUBMITTER]).transact(
+        transaction_context=_ctx(vf, verdict)
+    )
     return verifier.get_latest_case_for(args=["agr_0", idx]).call()
+
+
+def _settle(verifier, reserve, vf, verdict, idx=0):
+    case_id = _review(verifier, vf, idx, verdict)
+    return reserve.apply_verdict(args=[case_id]).transact()
+
+
+def _bal(reserve, who):
+    return int(reserve.balance_of(args=[who.address]).call())
 
 
 def _due_ids(reserve):
     return [d["agreement_id"] for d in json.loads(reserve.get_due(args=[]).call())]
 
 
-# ============================ guard tests (V2.1) ============================
+# ============================ settlement guards ============================
 
 def test_review_refused_when_not_active():
     acct = get_default_account()
@@ -191,14 +222,16 @@ def test_stale_epoch_verdict_cannot_settle():
     _expect_revert(lambda: reserve.apply_verdict(args=[v_stale]).transact())
 
 
-# ============================ keeper-due tests (V3) ============================
+# ==================== scheduled due times / keeper surface ====================
 
-def test_active_checkpoint_is_due():
+def test_activation_schedules_an_explicit_due_time():
     acct = get_default_account()
     bob = create_account()
     verifier, reserve = _deploy_pair(acct)
     _make_active(reserve, acct, bob, interval=0)
 
+    cp = reserve.get_checkpoint(args=["agr_0", 0]).call()
+    assert cp["next_review_at"] > 0
     assert "agr_0" in _due_ids(reserve)
 
 
@@ -216,25 +249,24 @@ def test_non_active_agreement_is_not_due():
     assert _due_ids(reserve) == []
 
 
-def test_backoff_removes_checkpoint_from_due():
+def test_future_due_time_blocks_discovery_and_review():
+    """A premature review is hidden from due discovery AND rejected at execution."""
     acct = get_default_account()
     bob = create_account()
     vf = get_validator_factory()
     verifier, reserve = _deploy_pair(acct)
     _make_active(reserve, acct, bob, interval=BIG_INTERVAL)
 
-    assert "agr_0" in _due_ids(reserve)
-
-    v_bad = _review(verifier, vf)
-    assert tx_execution_succeeded(reserve.apply_verdict(args=[v_bad]).transact())
-
     cp = reserve.get_checkpoint(args=["agr_0", 0]).call()
-    assert cp["status"] == "pending"
     assert cp["next_review_at"] > 0
     assert "agr_0" not in _due_ids(reserve)
 
+    _expect_revert(
+        lambda: verifier.run_review(args=["agr_0", 0, SUBMITTER]).transact(transaction_context=_ctx(vf))
+    )
 
-# ============ V3.1: verifier state is scoped to the reserve instance ============
+
+# ==================== reserve-instance scoping of verifier state ====================
 
 def _deploy_verifier(acct):
     return get_contract_factory(contract_file_path=VERIFIER).deploy(
@@ -259,8 +291,6 @@ def _make_active_on(reserve, creator, recipient, tranche=1000, interval=0):
 
 
 def test_verdict_cannot_settle_a_different_reserve():
-    """A verdict minted against reserve A must not settle reserve B, even though
-    both hold an agr_0 with the same locked URL, criteria and epoch."""
     acct = get_default_account()
     bob = create_account()
     vf = get_validator_factory()
@@ -276,23 +306,17 @@ def test_verdict_cannot_settle_a_different_reserve():
     verifier.run_review(args=["agr_0", 0, SUBMITTER]).transact(transaction_context=_ctx(vf))
     case_a = verifier.get_latest_case_for(args=["agr_0", 0]).call()
     assert case_a
-
-    # the verdict carries the reserve it was produced against
     assert verifier.get_verdict(args=[case_a]).call()["reserve"].lower() == reserve_a.address.lower()
 
-    # it must NOT settle reserve B
     _expect_revert(lambda: reserve_b.apply_verdict(args=[case_a]).transact())
     ag_b = reserve_b.get_agreement(args=["agr_0"]).call()
     assert ag_b["status"] == "active"
     assert ag_b["reserved"] == 1000
 
-    # and the legitimate path is untouched: it still applies to its own reserve
     assert tx_execution_succeeded(reserve_a.apply_verdict(args=[case_a]).transact())
 
 
 def test_epoch_key_is_scoped_per_reserve():
-    """Reserve A burning the agr_0 / index 0 / epoch 1 review slot must not block
-    reserve B's identical slot on the same shared verifier."""
     acct = get_default_account()
     bob = create_account()
     vf = get_validator_factory()
@@ -309,8 +333,159 @@ def test_epoch_key_is_scoped_per_reserve():
         verifier.run_review(args=["agr_0", 0, SUBMITTER]).transact(transaction_context=_ctx(vf))
     )
 
-    # same agreement id, index and epoch on a different reserve: still reviewable
     assert tx_execution_succeeded(verifier.set_reserve(args=[reserve_b.address]).transact())
     assert tx_execution_succeeded(
         verifier.run_review(args=["agr_0", 0, SUBMITTER]).transact(transaction_context=_ctx(vf))
     )
+
+
+# ==================== outcome matrix: state + balance movement ====================
+
+def test_outcome_release_pays_the_full_tranche():
+    acct = get_default_account()
+    bob = create_account()
+    dave = create_account()
+    vf = get_validator_factory()
+    verifier, reserve = _deploy_with_fee_wallet(acct, dave)
+    _make_active(reserve, acct, bob)
+
+    assert tx_execution_succeeded(_settle(verifier, reserve, vf, _verdict("Release", 100)))
+
+    cp = reserve.get_checkpoint(args=["agr_0", 0]).call()
+    assert cp["status"] == "released"
+    assert cp["fulfillment_pct"] == 100
+    assert cp["released"] == 990
+    assert cp["withheld"] == 0
+
+    ag = reserve.get_agreement(args=["agr_0"]).call()
+    assert ag["status"] == "completed"
+    assert ag["reserved"] == 0
+    assert ag["released_total"] == 990
+    assert ag["withheld_total"] == 0
+
+    assert _bal(reserve, bob) == 990
+    assert _bal(reserve, dave) == 10
+    assert _bal(reserve, acct) == 0
+
+
+def test_outcome_reduce_pays_proportionally_and_withholds_the_rest():
+    acct = get_default_account()
+    bob = create_account()
+    dave = create_account()
+    vf = get_validator_factory()
+    verifier, reserve = _deploy_with_fee_wallet(acct, dave)
+    _make_active(reserve, acct, bob)
+
+    assert tx_execution_succeeded(_settle(verifier, reserve, vf, _verdict("Reduce", 50)))
+
+    cp = reserve.get_checkpoint(args=["agr_0", 0]).call()
+    assert cp["status"] == "reduced"
+    assert cp["fulfillment_pct"] == 50
+    assert cp["released"] == 495
+    assert cp["withheld"] == 500
+
+    ag = reserve.get_agreement(args=["agr_0"]).call()
+    assert ag["status"] == "completed"
+    assert ag["reserved"] == 0
+    assert ag["released_total"] == 495
+    assert ag["withheld_total"] == 500
+
+    assert _bal(reserve, bob) == 495
+    assert _bal(reserve, dave) == 5
+    assert _bal(reserve, acct) == 500
+
+
+def test_outcome_pause_holds_capital_and_reopens():
+    acct = get_default_account()
+    bob = create_account()
+    dave = create_account()
+    vf = get_validator_factory()
+    verifier, reserve = _deploy_with_fee_wallet(acct, dave)
+    _make_active(reserve, acct, bob)
+
+    assert tx_execution_succeeded(_settle(verifier, reserve, vf, _verdict("Pause", 0)))
+
+    cp = reserve.get_checkpoint(args=["agr_0", 0]).call()
+    assert cp["status"] == "paused"
+    assert cp["epoch"] == 2
+    assert cp["released"] == 0
+
+    ag = reserve.get_agreement(args=["agr_0"]).call()
+    assert ag["status"] == "active"
+    assert ag["reserved"] == 1000
+
+    assert _bal(reserve, bob) == 0
+    assert _bal(reserve, dave) == 0
+    assert _bal(reserve, acct) == 0
+
+
+def test_outcome_escalate_holds_capital_and_reopens():
+    acct = get_default_account()
+    bob = create_account()
+    dave = create_account()
+    vf = get_validator_factory()
+    verifier, reserve = _deploy_with_fee_wallet(acct, dave)
+    _make_active(reserve, acct, bob)
+
+    assert tx_execution_succeeded(_settle(verifier, reserve, vf, _verdict("Escalate", 0)))
+
+    cp = reserve.get_checkpoint(args=["agr_0", 0]).call()
+    assert cp["status"] == "escalated"
+    assert cp["epoch"] == 2
+    assert cp["released"] == 0
+
+    ag = reserve.get_agreement(args=["agr_0"]).call()
+    assert ag["status"] == "active"
+    assert ag["reserved"] == 1000
+
+    assert _bal(reserve, bob) == 0
+    assert _bal(reserve, dave) == 0
+    assert _bal(reserve, acct) == 0
+
+
+def test_outcome_cancel_refunds_the_creator():
+    acct = get_default_account()
+    bob = create_account()
+    dave = create_account()
+    vf = get_validator_factory()
+    verifier, reserve = _deploy_with_fee_wallet(acct, dave)
+    _make_active(reserve, acct, bob)
+
+    assert tx_execution_succeeded(_settle(verifier, reserve, vf, _verdict("Cancel", 0)))
+
+    cp = reserve.get_checkpoint(args=["agr_0", 0]).call()
+    assert cp["status"] == "cancelled"
+    assert cp["released"] == 0
+
+    ag = reserve.get_agreement(args=["agr_0"]).call()
+    assert ag["status"] == "cancelled"
+    assert ag["reserved"] == 0
+
+    assert _bal(reserve, bob) == 0
+    assert _bal(reserve, dave) == 0
+    assert _bal(reserve, acct) == 1000
+
+
+def test_inconsistent_outcome_does_not_settle():
+    """Release claimed at 10% violates the documented Release >= 85 relationship,
+    so it must not move capital; the checkpoint reopens instead."""
+    acct = get_default_account()
+    bob = create_account()
+    dave = create_account()
+    vf = get_validator_factory()
+    verifier, reserve = _deploy_with_fee_wallet(acct, dave)
+    _make_active(reserve, acct, bob)
+
+    assert tx_execution_succeeded(_settle(verifier, reserve, vf, _verdict("Release", 10)))
+
+    cp = reserve.get_checkpoint(args=["agr_0", 0]).call()
+    assert cp["status"] == "pending"
+    assert cp["epoch"] == 2
+    assert cp["released"] == 0
+
+    ag = reserve.get_agreement(args=["agr_0"]).call()
+    assert ag["status"] == "active"
+    assert ag["reserved"] == 1000
+
+    assert _bal(reserve, bob) == 0
+    assert _bal(reserve, dave) == 0

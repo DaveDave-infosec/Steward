@@ -2,6 +2,7 @@
 from genlayer import *
 import json
 import re
+from datetime import datetime, timezone
 
 
 @allow_storage
@@ -32,6 +33,9 @@ class StewardVerifier(gl.Contract):
 
     def _sender(self) -> str:
         return gl.message.sender_address.as_hex.lower()
+
+    def _now(self) -> int:
+        return int(datetime.now(timezone.utc).timestamp())
 
     @gl.public.write
     def set_reserve(self, reserve_address: str):
@@ -70,6 +74,12 @@ class StewardVerifier(gl.Contract):
         local_url = str(cp["evidence_url"])
         local_criteria = str(cp["criteria"])
         epoch = int(cp["epoch"])
+
+        # reviews are only possible once the checkpoint's scheduled due time has
+        # arrived. a premature review is rejected at execution, not merely hidden
+        # from due discovery.
+        if self._now() < int(cp["next_review_at"]):
+            raise Exception("checkpoint is not due for review yet")
 
         # one verdict per review epoch, SCOPED TO THE RESERVE INSTANCE. agreement ids
         # restart per reserve deployment, so an unscoped key would let one reserve's

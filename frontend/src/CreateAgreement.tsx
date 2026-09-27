@@ -6,13 +6,25 @@ type CheckpointDraft = {
   criteria: string;
   trancheAmount: string;
   reviewCadence: string;
+  reviewInterval: number;
 };
+
+// the cadence a creator picks drives the on-chain review schedule: it sets the
+// checkpoint's review_interval, which decides when it first becomes due and how
+// long it backs off after a Pause, Escalate or malformed verdict reopens it.
+const CADENCES: { value: string; label: string; interval: number }[] = [
+  { value: "once", label: "Once (immediately)", interval: 0 },
+  { value: "hourly", label: "Hourly", interval: 3600 },
+  { value: "daily", label: "Daily", interval: 86400 },
+  { value: "weekly", label: "Weekly", interval: 604800 },
+];
 
 const emptyCheckpoint = (): CheckpointDraft => ({
   evidenceUrl: "",
   criteria: "",
   trancheAmount: "",
-  reviewCadence: "manual",
+  reviewCadence: "once",
+  reviewInterval: 0,
 });
 
 export function CreateAgreement({ account, onCreated }: { account: string; onCreated: () => void }) {
@@ -39,13 +51,15 @@ export function CreateAgreement({ account, onCreated }: { account: string; onCre
         evidenceUrl: "https://api.github.com/repos/DaveDave-infosec/Balance/contents/contracts",
         criteria: "The contracts directory contains the Balance Intelligent Contract as a Python source file (balance).",
         trancheAmount: "500",
-        reviewCadence: "manual",
+        reviewCadence: "once",
+        reviewInterval: 0,
       },
       {
         evidenceUrl: "https://raw.githubusercontent.com/DaveDave-infosec/Balance/main/README.md",
         criteria: "The project both (a) documents a deployed Intelligent Contract performing proportional, consensus-based escrow settlement, and (b) has published a tagged v1.0.0 release.",
         trancheAmount: "500",
-        reviewCadence: "manual",
+        reviewCadence: "once",
+        reviewInterval: 0,
       },
     ]);
   }
@@ -78,7 +92,7 @@ export function CreateAgreement({ account, onCreated }: { account: string; onCre
       for (let i = 0; i < checkpoints.length; i++) {
         const c = checkpoints[i];
         setStatus("Locking checkpoint " + (i + 1) + " of " + checkpoints.length + "…");
-        await addCheckpoint(account, agreementId, c.evidenceUrl, c.criteria, Number(c.trancheAmount), c.reviewCadence);
+        await addCheckpoint(account, agreementId, c.evidenceUrl, c.criteria, Number(c.trancheAmount), c.reviewCadence, c.reviewInterval);
       }
       setStatus("Finalizing — locking criteria & sources immutably…");
       await finalizeAgreement(account, agreementId);
@@ -143,7 +157,18 @@ export function CreateAgreement({ account, onCreated }: { account: string; onCre
               </label>
               <label className="field small">
                 <span>Review cadence</span>
-                <input className="mono" value={c.reviewCadence} onChange={(e) => updateCp(i, { reviewCadence: e.target.value })} placeholder="manual" />
+                <select
+                  className="mono"
+                  value={c.reviewCadence}
+                  onChange={(e) => {
+                    const opt = CADENCES.find((o) => o.value === e.target.value) ?? CADENCES[0];
+                    updateCp(i, { reviewCadence: opt.value, reviewInterval: opt.interval });
+                  }}
+                >
+                  {CADENCES.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
               </label>
             </div>
           </div>
